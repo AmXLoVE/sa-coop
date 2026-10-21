@@ -138,6 +138,8 @@ enum MsgId : uint8_t {
                               // attach: u8 kind, u16 net id; position: vec3; play; clear)
     G_GARAGE_DOOR = 144,      // reliable: u8 garage, u8 door of a shop garage (0 shut, 1 open, 2 none: the sender's
                               // door follows ours)
+    G_SCENE_CAMERA = 145,     // host: its mission's script holds the camera (a scene on the engine, not a cutscene):
+                              // u8 on[, vec source, vec front, vec up, f32 fov, u8 cut]; unreliable while on, reliable off
 
     G_VOICE = 200,            // unreliable: voice frame
     G_LAST = 255,
