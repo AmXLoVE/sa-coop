@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <vector>
 
 #include "common/api/protocol/Protocol.h"
@@ -25,6 +26,8 @@ Vehicles& Vehicles::Instance() {
 }
 
 namespace {
+// models streamed in for a mirror, with when they were first asked for: required until it is made (see SpawnMirror)
+std::map<int, uint64_t> g_mirrorModels;
 // The lock of a mirror. A random car locked there does not lock the other players out; a mission's locked car (2) stays
 // shut for them too. "Locked with the player inside" (4, CARLOCK_LOCKED_PLAYER_INSIDE: nobody opens it from outside, the
 // player in it cannot get out) is a mission's way to keep its CJ in the car: it is the owner's player's, not the
@@ -287,12 +290,25 @@ CVehicle* Vehicles::FindAdoptable(uint16_t model, const CVector& pos) {
 }
 
 CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
+    // Streamed in the background, CreateMirror is retried every frame: required and first in the queue until the car
+    // is made, then left to the streamer as usual. A big model (the partner's tank) still waited minutes: the streamer
+    // loads one that does not fit its buffer only when both its channels are idle, which they seldom were with
+    // several game copies busy, until something loaded the queue at once (a pickup's model). After half a second the
+    // model is loaded at once here too: a short stall instead of a player driving nothing.
     if (!IsModelLoaded(sp.model)) {
-        RequestModel(sp.model, 0);  // streamed in the background, CreateMirror is retried every frame
-        return nullptr;
+        auto [it, first] = g_mirrorModels.try_emplace(sp.model, NowMs());
+        if (!first && NowMs() - it->second > 500) {
+            bool ok = LoadModelNow(sp.model);
+            LOGI("Model %d of vehicle %04X loaded at once (%s)", sp.model, sp.netId, ok ? "ok" : "failed");
+            if (!ok) it->second = NowMs();  // tried again in half a second
+        } else {
+            RequestModel(sp.model, 2 | 0x10 /* GAME_REQUIRED | PRIORITY_REQUEST */);
+        }
+        if (!IsModelLoaded(sp.model)) return nullptr;
     }
     int handle = -1;
     Cmd(0x00A5).I(sp.model).F(sp.pos.x).F(sp.pos.y).F(sp.pos.z).Out(&handle).Run();  // CREATE_CAR
+    if (g_mirrorModels.erase(sp.model)) MarkModelNotNeeded(sp.model);  // the car made of it holds it from now on
     CVehicle* v = GetVehicle(handle);
     if (!v) return nullptr;
     SetVehicleMatrix(v, sp.pos, sp.rot);

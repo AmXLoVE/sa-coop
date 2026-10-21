@@ -23,6 +23,7 @@
 //    playing while this one watches, and a mission failed when its people got hurt in the scene.
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
@@ -227,14 +228,23 @@ void __cdecl HookRegisterKill(CPed* ped, CEntity* killer, int weapon, bool heads
 }
 
 // The crimes the game reads off events (CEventGroup::Add -> ReportCriminalEvent) go to the player in focus
-// (FindPlayerWanted), whoever committed them. The ones of the other player were charged to this game's player: a ped it
-// hit tells its gang and friends later (CInformGroupEventQueue, CInformFriendsEventQueue: past KeepWanted), and its
-// car's knocks were never guarded. Partners near the host gave the host their stars. A crime of the other player, or of
-// the car it drives, is left to its own game, which reports it itself; this game's own crimes are untouched.
+// (FindPlayerWanted), whoever committed them: a ped the other player hit tells its gang and friends later
+// (CInformGroupEventQueue, CInformFriendsEventQueue: past KeepWanted), and its car's knocks were never guarded. The
+// stars of a crime go to every player within 100 m of it (G_WANTED): this player keeps the other player's crime when it
+// is that close (the peds near the host live in the host's game: only it sees them hurt), farther away it is left to
+// the other game.
 using ReportCriminalFn = void(__fastcall*)(void*, void*, CPed*);
 ReportCriminalFn g_origDamageCrime = nullptr, g_origVehicleDamageCrime = nullptr, g_origHitAndRunCrime = nullptr,
                  g_origKnockOffBikeCrime = nullptr;
-bool OtherPlayersCrime(CEntity* offender) { return Net().Online() && IsRemotePlayerEntity(offender); }
+constexpr float kWantedShareRange = 100.0f;  // the players this close to a crime all get its stars (see G_WANTED)
+bool NearMe(const CVector& at) {
+    CPlayerPed* me = FindPlayerPed(0);
+    return me && (me->GetPosition() - at).Length() < kWantedShareRange;
+}
+// the other player's crime, too far from this player to share: left to the other game
+bool OtherPlayersCrime(CEntity* offender) {
+    return Net().Online() && IsRemotePlayerEntity(offender) && !NearMe(offender->GetPosition());
+}
 void __fastcall HookDamageCrime(void* ev, void* edx, CPed* ped) {  // CEventDamage: m_pSourceEntity +0x14
     if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x14))) g_origDamageCrime(ev, edx, ped);
 }
@@ -246,6 +256,107 @@ void __fastcall HookHitAndRunCrime(void* ev, void* edx, CPed* ped) {  // CEventV
 }
 void __fastcall HookKnockOffBikeCrime(void* ev, void* edx, CPed* ped) {  // CEventKnockOffBike: m_ped +0x30
     if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x30))) g_origKnockOffBikeCrime(ev, edx, ped);
+}
+
+// Every crime reaches a wanted level through CWanted::AddCrimeToQ, with where it was committed: the offender's position
+// (CCrime::ReportCrime, the events above). A crime charged to this game's player at the spot where another player or
+// its car stands is that player's: kept within 100 m of this player (its stars are shared then, G_WANTED), farther
+// away left to the other game. Logged with the engine's callers.
+bool IsAt(const CVector& a, const CVector& b) { return std::fabs(a.x - b.x) < 1.0f && std::fabs(a.y - b.y) < 1.0f && std::fabs(a.z - b.z) < 2.0f; }
+void* LocalWanted() {
+    CPlayerPed* me = FindPlayerPed(0);
+    return me && me->PlayerData() ? me->Wanted() : nullptr;
+}
+std::string EngineCallers() {  // return addresses into gta_sa.exe on the stack, the nearest first
+    volatile uintptr_t probe = 0;
+    auto* sp = (const uintptr_t*)&probe;
+    std::string out;
+    int found = 0;
+    for (int i = 0; i < 1024 && found < 8; ++i) {
+        uintptr_t v = sp[i];
+        if (v >= 0x401000 && v < 0x857000) out += Format(" %06X", (unsigned)v), ++found;
+    }
+    return out;
+}
+const RemotePlayer* OtherPlayerAt(const CVector& pos) {
+    CPlayerPed* me = FindPlayerPed(0);
+    if (me && (IsAt(pos, me->GetPosition()) || (me->InVehicle() && me->Vehicle() && IsAt(pos, me->Vehicle()->GetPosition()))))
+        return nullptr;
+    for (auto& [id, rp] : Players::Instance().All()) {
+        if (!rp.ped) continue;
+        if (IsAt(pos, rp.ped->GetPosition())) return &rp;
+        if (rp.ped->InVehicle() && rp.ped->Vehicle() && IsAt(pos, rp.ped->Vehicle()->GetPosition())) return &rp;
+    }
+    return nullptr;
+}
+
+using AddCrimeFn = bool(__fastcall*)(void*, void*, int, uint32_t, const CVector*, bool, bool);
+AddCrimeFn g_origAddCrime = nullptr;
+bool __fastcall HookAddCrimeToQ(void* wanted, void* edx, int type, uint32_t id, const CVector* pos, bool reported, bool dontCare) {
+    if (Net().Online() && pos && wanted && wanted == LocalWanted() && core::IsPlayerReady()) {
+        if (const RemotePlayer* rp = OtherPlayerAt(*pos)) {
+            bool near = NearMe(*pos);
+            LOGD("Crime %d of player %d %s (at %.1f,%.1f,%.1f; callers%s)", type, rp->id, near ? "charged to us, shared" : "not ours",
+                 pos->x, pos->y, pos->z, EngineCallers().c_str());
+            if (!near) return true;  // as if already queued: nothing reported
+        } else {
+            LOGD("Crime %d charged to us (at %.1f,%.1f,%.1f; callers%s)", type, pos->x, pos->y, pos->z, EngineCallers().c_str());
+        }
+    }
+    return g_origAddCrime(wanted, edx, type, id, pos, reported, dontCare);
+}
+
+using SetWantedFn = void(__fastcall*)(void*, void*, int);
+SetWantedFn g_origSetWanted = nullptr;
+void __fastcall HookSetWantedLevel(void* wanted, void* edx, int level) {
+    if (Net().Online() && wanted && wanted == LocalWanted() && level > Field<int32_t>(wanted, 0x2C))  // m_WantedLevel
+        LOGI("Our wanted level %d -> %d (callers%s)", Field<int32_t>(wanted, 0x2C), level, EngineCallers().c_str());
+    g_origSetWanted(wanted, edx, level);
+}
+
+// Stars are shared: the wanted level this player's crimes raised goes to every player within 100 m (the one who
+// committed them among them: its own crimes near the host are seen only in the host's game), who get at least as many
+// stars. Cheats keep their stars for the one who typed them, and stars got this way are not sent on.
+int g_lastWanted = 0;
+int LocalWantedLevel() {
+    void* w = LocalWanted();
+    return w ? Field<int32_t>(w, 0x2C) : 0;  // CWanted::m_WantedLevel
+}
+
+using CheatWantedFn = void(__fastcall*)(void*, void*, int);
+CheatWantedFn g_origCheatWanted = nullptr;
+void __fastcall HookCheatWantedLevel(void* wanted, void* edx, int level) {
+    g_origCheatWanted(wanted, edx, level);
+    if (wanted == LocalWanted()) g_lastWanted = LocalWantedLevel();  // a cheat's stars are not shared
+}
+
+void ShareWanted() {
+    int level = LocalWantedLevel();
+    if (level > g_lastWanted && Net().Online() && core::IsPlayerReady()) {
+        CPlayerPed* me = FindPlayerPed(0);
+        CVector p = me->GetPosition();
+        Writer w(proto::G_WANTED);
+        w.U8((uint8_t)level);
+        w.Vec({p.x, p.y, p.z});
+        w.U8((uint8_t)me->AreaCode());
+        Net().Send(proto::CH_RELIABLE, w);
+        LOGI("Wanted level %d: shared with the players within %.0f m", level, kWantedShareRange);
+    }
+    g_lastWanted = level;
+}
+
+void HandleWanted(uint8_t from, Reader& r) {
+    int level = r.U8();
+    Vec3 p = r.Vec();
+    int area = r.U8();
+    if (!r.Ok() || !core::IsPlayerReady() || level <= 0 || level > 6) return;
+    CPlayerPed* me = FindPlayerPed(0);
+    void* wanted = LocalWanted();
+    if (!me || !wanted || (uint8_t)me->AreaCode() != area || !NearMe(CVector{p.x, p.y, p.z})) return;
+    if (level <= LocalWantedLevel()) return;
+    CallMethod<0x562570>(wanted, level);  // CWanted::SetWantedLevelNoDrop
+    g_lastWanted = LocalWantedLevel();  // not sent on
+    LOGI("Wanted level %d from player %d nearby", g_lastWanted, from);
 }
 
 void HandleDamage(uint8_t from, Reader& r) {
@@ -319,8 +430,14 @@ public:
         mem::HookFn(0x4B50B0, &HookVehicleDamageCrime, &g_origVehicleDamageCrime, "CEventVehicleDamage::ReportCriminalEvent");
         mem::HookFn(0x4B27D0, &HookHitAndRunCrime, &g_origHitAndRunCrime, "CEventVehicleHitAndRun::ReportCriminalEvent");
         mem::HookFn(0x4B4E80, &HookKnockOffBikeCrime, &g_origKnockOffBikeCrime, "CEventKnockOffBike::ReportCriminalEvent");
+        mem::HookFn(0x562000, &HookAddCrimeToQ, &g_origAddCrime, "CWanted::AddCrimeToQ");
+        mem::HookFn(0x562470, &HookSetWantedLevel, &g_origSetWanted, "CWanted::SetWantedLevel");
+        mem::HookFn(0x562540, &HookCheatWantedLevel, &g_origCheatWanted, "CWanted::CheatWantedLevel");
         Net().SetHandler(proto::G_DAMAGE, &HandleDamage);
+        Net().SetHandler(proto::G_WANTED, &HandleWanted);
     }
+    void OnPostProcess() override { ShareWanted(); }
+    void OnGameStarted() override { g_lastWanted = 0; }
 };
 
 Damage g_damage;

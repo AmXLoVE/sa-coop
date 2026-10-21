@@ -47,6 +47,7 @@ private:
     void* m_hwnd = nullptr;
     bool m_kbCapture = false;
     bool m_mouseCapture = false;
+    int m_cursorShown = 0;  // ShowCursor(TRUE) calls made over the window in the background, undone at the front
     InputState m_state;
 };
 

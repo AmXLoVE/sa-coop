@@ -68,6 +68,8 @@ void Input::EndFrame() {
 
 void Input::UpdateMouse(float bbW, float bbH) {
     if (!m_hwnd) return;
+    if (m_cursorShown > 0 && game::IsForeground())  // the cursor shown over the window in the background: as it was
+        for (; m_cursorShown > 0; --m_cursorShown) ShowCursor(FALSE);
     POINT p;
     GetCursorPos(&p);
     ScreenToClient((HWND)m_hwnd, &p);
@@ -130,6 +132,16 @@ bool Input::OnMessage(unsigned msg, uintptr_t wParam, intptr_t lParam) {
             }
             return false;
         case WM_SETCURSOR:
+            // A game window in the background shows the arrow over it: the game hides the cursor over its window,
+            // and with four copies tiling the screen there was no place left where it showed, nothing to click
+            // another window with after Alt+Tab. It is hidden again as the window comes to the front (UpdateMouse).
+            if (LOWORD(lParam) == HTCLIENT && !game::IsForeground()) {
+                if (m_cursorShown == 0)
+                    do ++m_cursorShown;
+                    while (ShowCursor(TRUE) < 0);
+                SetCursor(LoadCursorW(nullptr, (LPCWSTR)IDC_ARROW));
+                return true;
+            }
             if (m_mouseCapture && LOWORD(lParam) == HTCLIENT) {
                 SetCursor(nullptr);  // we draw our own cursor
                 return true;

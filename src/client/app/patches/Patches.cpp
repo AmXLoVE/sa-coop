@@ -44,9 +44,13 @@ PadFn g_origUpdateMouse = nullptr;
 void __fastcall HookUpdateMouse(void* self, void* edx) {
     // our menu has the mouse, or the window is in the background (the game reads the mouse through DirectInput, which
     // may answer a window in the background too): the game sees no mouse
+    // The buttons are let go the way a real release is: the old state keeps the last one, so the game sees a button
+    // held a moment ago come up. Wiped both at once, a punch or a shot that had just begun (the click that took the
+    // focus to another window) never saw its button come up: back in the window the player stood frozen at its start,
+    // and Shift blocked instead of jumping, until the next click.
     if (ui::In().MouseCaptured() || (Cfg().runInBackground && !game::IsForeground())) {
-        memset((void*)0xB73418, 0, 0x14);  // CPad::NewMouseControllerState
-        memset((void*)0xB7342C, 0, 0x14);  // CPad::OldMouseControllerState
+        memcpy((void*)0xB7342C, (void*)0xB73418, 0x14);  // CPad::OldMouseControllerState = NewMouseControllerState
+        memset((void*)0xB73418, 0, 0x14);                // CPad::NewMouseControllerState: nothing pressed or moved
         return;
     }
     g_origUpdateMouse(self, edx);
@@ -569,12 +573,12 @@ void MuteBackgroundInput() {
     // Running in the background, the game still reads input that is not addressed to its window (the shift keys it
     // asks Windows for every frame, the mouse through DirectInput): with several copies on one PC a Shift pressed in
     // one window made the players of all of them jump. A window in the background plays without input: the keyboard
-    // state, the pads and the mouse are released every frame before the game uses them.
+    // state is released every frame before the game uses it, the mouse by HookUpdateMouse. The pads are left to the
+    // game, which builds them from those every frame (CPad::Update): a button held as the window lost the focus comes
+    // up there like a real release. Wiping the pads' old state too lost that release: whatever the button had begun (a
+    // punch, a shot, a spray) stayed frozen at its start until the player clicked again.
     if (!Cfg().runInBackground || game::IsForeground() || game::GameState() != game::GAME_STATE_IDLE) return;
-    ui::In().ClearGameKeys();
-    memset(&game::GetPad(1)->NewState, 0, sizeof(game::GetPad(1)->NewState));
-    memset(&game::GetPad(1)->OldState, 0, sizeof(game::GetPad(1)->OldState));
-    memset((void*)0xB73418, 0, 0x28);  // CPad::NewMouseControllerState and OldMouseControllerState
+    game::Call<0x53F1E0>();  // CPad::ClearKeyBoardHistory: the new, old and "temp" keyboard state
 }
 
 }  // namespace coop::patches
