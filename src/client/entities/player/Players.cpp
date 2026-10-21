@@ -320,7 +320,17 @@ void __fastcall HookVehicleAudioService(void* audio, void* edx) {
     auto* veh = Field<CVehicle*>(audio, 0x4);  // CAEAudioEntity::m_pEntity
     CPed* driver = veh ? veh->Driver() : nullptr;
     bool remote = driver && driver->PedType() == PED_TYPE_PLAYER1 && driver != FindPlayerPed(0);
-    if (remote) driver->PedType() = PED_TYPE_PLAYER_NETWORK;
+    if (remote) {
+        driver->PedType() = PED_TYPE_PLAYER_NETWORK;
+        // its horn: a car not of this game's player honks by a pattern (GetHornState: HornPattern[m_HornPattern]
+        // [44 - m_HornCounter]); kept at a step that sounds (pattern 1, step 10) while the other player holds the horn
+        NetVehicle* nv = Vehicles::Instance().Find(veh);
+        if (nv && nv->hasState) {
+            bool horn = (nv->state.flags & VehicleState::F_HORN) != 0;
+            Field<uint32_t>(veh, 0x514) = horn ? 34 : 0;  // m_HornCounter
+            if (horn) Field<int8_t>(veh, 0x518) = 1;      // m_HornPattern
+        }
+    }
     g_origVehicleAudio(audio, edx);
     if (remote) driver->PedType() = PED_TYPE_PLAYER1;
 }

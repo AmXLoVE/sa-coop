@@ -359,6 +359,20 @@ void HandleWanted(uint8_t from, Reader& r) {
     LOGI("Wanted level %d from player %d nearby", g_lastWanted, from);
 }
 
+// "Only damaged by the player" (SET_CHAR_ONLY_DAMAGED_BY_PLAYER, SET_CAR_ONLY_DAMAGED_BY_PLAYER: CPhysical::bInvulnerable)
+// lets through only FindPlayerPed's hits, this game's player: the criminals of the vigilante missions took no damage
+// from the partner (an issue of 0.2.5). For a hit of another player the flag is lifted: in co-op it is a player too.
+struct LetPlayerHit {
+    uint8_t* flags;
+    bool was;
+    explicit LetPlayerHit(void* entity) : flags((uint8_t*)entity + 0x42), was(entity && (*flags & 0x40)) {
+        if (was) *flags &= ~0x40;  // m_nPhysicalFlags bit 22: bInvulnerable
+    }
+    ~LetPlayerHit() {
+        if (was) *flags |= 0x40;
+    }
+};
+
 void HandleDamage(uint8_t from, Reader& r) {
     uint8_t kind = r.U8(), owner = r.U8();
     uint16_t netId = r.U16();
@@ -374,6 +388,7 @@ void HandleDamage(uint8_t from, Reader& r) {
         if (CPed* ped = Peds::Instance().FindOwned(netId)) {
             {
                 KeepWanted keep;
+                LetPlayerHit lift(ped);
                 CVehicle* car = rp && rp->ped && rp->ped->InVehicle() ? rp->ped->Vehicle() : nullptr;
                 if (weapon == WEAPON_RAMMEDBYCAR && car) g_origKillWithCar(ped, nullptr, car, damage, 0);
                 else if (weapon != WEAPON_RAMMEDBYCAR) g_origGenerateDamage(ped, attacker, weapon, (int)damage, piece, dir);
@@ -399,6 +414,7 @@ void HandleDamage(uint8_t from, Reader& r) {
         NetVehicle* nv = Vehicles::Instance().Find(netId);
         if (nv && !Vehicles::Instance().IsMirror(*nv) && IsVehicleValid(nv->veh)) {
             KeepWanted keep;
+            LetPlayerHit lift(nv->veh);
             g_origInflictDamage(nv->veh, nullptr, attacker, weapon, damage, CVector{p.x, p.y, p.z});
         }
     } else if (kind == KILLED_BY_YOU) {

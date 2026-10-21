@@ -127,7 +127,9 @@ VehicleState VehicleState::Capture(game::CVehicle* v) {
     s.brake = v->BrakePedal();
     s.health = v->Health();
     s.flags = (v->EngineOn() ? F_ENGINE : 0) | (v->LightsOn() ? F_LIGHTS : 0) | (v->SirenOn() ? F_SIREN : 0) |
-              (v->Status() == 5 ? F_WRECKED : 0);
+              (v->Status() == 5 ? F_WRECKED : 0) |
+              // the horn sounds while CVehicle::m_HornCounter is set for a player's car (CAEVehicleAudioEntity::GetHornState)
+              (v->Status() == 0 /* STATUS_PLAYER */ && game::Field<uint32_t>(v, 0x514) != 0 ? F_HORN : 0);
     int type = v->VehicleSubClass();
     if (type <= game::VEHICLE_TYPE_PLANE || type == game::VEHICLE_TYPE_TRAILER) {  // CAutomobile and its subclasses
         s.extras |= X_MISC;
