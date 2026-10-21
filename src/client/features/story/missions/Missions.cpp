@@ -1585,6 +1585,24 @@ public:
         Net().SetHandler(proto::G_SCENE_CAMERA, &HandleSceneCamera);
     }
 
+    // The markers of the other game are drawn before this game's frame: a 3D marker shows only when it was placed before
+    // C3dMarkers::Update (CSpecialFX::Update, in CGame::Process), which makes it active; the rendering draws the active
+    // ones and then clears them. Placed after the game's frame, as they were, they were cleared unseen every frame: the
+    // partners never saw the host's destination cylinders.
+    void OnPreProcess() override {
+        if (!Net().Online() || !core::IsPlayerReady()) return;
+        if (Net().IsHost()) {
+            if (!g_active)
+                for (auto& [id, w] : g_partnersWaiting)
+                    g_origHighlight(w.area.id ^ 0x20000000u, w.area.x1, w.area.y1, w.area.x2, w.area.y2, w.area.z);
+            return;
+        }
+        if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
+        // drawn every frame while the host keeps sending them (stale after 1 s: host gone/paused)
+        if (NowMs() - g_partnerAreasMs < 1000)
+            for (const Area& a : g_partnerAreas) g_origHighlight(a.id ^ 0x40000000u, a.x1, a.y1, a.x2, a.y2, a.z);
+    }
+
     void OnPostProcess() override {
         if (!Net().Online() || !core::IsPlayerReady()) return;
         if (Net().IsHost()) HostUpdate();
@@ -1702,16 +1720,9 @@ private:
             flow::WorldProgressed();
         }
 
-        // the markers partners wait at are lit here too (gone with a partner who left)
-        for (auto it = g_partnersWaiting.begin(); it != g_partnersWaiting.end();) {
-            if (!Net().Peers().count(it->first)) {
-                it = g_partnersWaiting.erase(it);
-                continue;
-            }
-            const Area& wa = it->second.area;
-            if (!active) g_origHighlight(wa.id ^ 0x20000000u, wa.x1, wa.y1, wa.x2, wa.y2, wa.z);
-            ++it;
-        }
+        // the markers partners wait at are lit here too (DrawMarkers, before the game's frame); gone with a partner who left
+        for (auto it = g_partnersWaiting.begin(); it != g_partnersWaiting.end();)
+            it = Net().Peers().count(it->first) ? std::next(it) : g_partnersWaiting.erase(it);
 
         // the partner's screen shows where the host waits
         bool waiting = !active && NowMs() - g_waitMs < 1500;
@@ -1817,10 +1828,6 @@ private:
                 Net().Send(proto::CH_RELIABLE, w);
             }
         }
-        if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
-        // markers are drawn every frame while the host keeps them (stale after 1 s: host gone/paused)
-        if (NowMs() - g_partnerAreasMs < 1000)
-            for (const Area& a : g_partnerAreas) g_origHighlight(a.id ^ 0x40000000u, a.x1, a.y1, a.x2, a.y2, a.z);
         // entity blips whose mirror appeared later
         static uint64_t last = 0;
         if (NowMs() - last > 500) {

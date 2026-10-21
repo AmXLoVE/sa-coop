@@ -236,12 +236,11 @@ GangDriveByFn g_origGangDriveBy = nullptr;
 bool __fastcall HookGangDriveByProcess(void* task, void* edx, CPed* ped) {
     auto ours = g_ourDriveBy.find(ped);
     if (ours != g_ourDriveBy.end() && !AimFromSeat(GetPad(0))) {
-        // a remote player's copy: the finished flag alone ended the task but left its lean-out pose on the last frame
-        // (the other players saw it frozen out of the window until it leaned out again); the task's own abort fades it
-        if (RemotePlayer* rp = Players::Instance().FindByPed(ped)) {
-            CallMethod<0x62D290, bool>(task, ped, 1 /* ABORT_PRIORITY_URGENT */, (void*)nullptr);  // CTaskSimpleGangDriveBy::MakeAbortable
-            LOGD("Remote player %d: drive-by let go", rp->id);
-        }
+        // the finished flag alone ended the task but left its lean-out pose on the last frame (frozen out of the window
+        // until the player leaned out again, its own game and the others alike); the task's own abort fades it
+        CallMethod<0x62D290, bool>(task, ped, 1 /* ABORT_PRIORITY_URGENT */, (void*)nullptr);  // CTaskSimpleGangDriveBy::MakeAbortable
+        if (RemotePlayer* rp = Players::Instance().FindByPed(ped)) LOGD("Remote player %d: drive-by let go", rp->id);
+        else LOGD("Drive-by let go");
         Field<uint8_t>(task, 8) = 1;  // m_bIsFinished: let go
     }
     bool done = g_origGangDriveBy(task, edx, ped);
@@ -1100,7 +1099,9 @@ void Players::SendVehicleState(CVehicle* v) {
     uint64_t now = NowMs();
     bool padChanged = !(common.pad == m_lastSentPad);
     bool driver = v->Driver() == me;
-    uint64_t interval = driver ? 33 : 100;
+    // a car of another player moves by these states and guesses in between: 50 a second for its driver (planes and fast
+    // cars jerked at 30), 20 for a passenger (~200 bytes each: ~10 KB/s up per driver, relayed by the host's server)
+    uint64_t interval = driver ? 20 : 50;
     if (!padChanged && now - m_lastSend < interval) return;
     m_lastSend = now;
     m_lastSentPad = common.pad;

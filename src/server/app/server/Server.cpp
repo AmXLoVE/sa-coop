@@ -361,8 +361,8 @@ void Server::HandleCommand(Player* p, const std::string& text) {
         if (admin)
             reply(kColorServer, "Для хоста: /kick <ник или номер> [причина], /say <текст>",
                   "For the host: /kick <nickname or number> [reason], /say <text>");
-        reply(kColorServer, "В игре: /tp [ник или номер] (переместиться к игроку), /tphere [ник или номер] (позвать игрока к себе)",
-              "In the game: /tp [nickname or number] (go to a player), /tphere [nickname or number] (bring a player to you)");
+        reply(kColorServer, "В игре: /tp [ник или номер] (переместиться к игроку), /tphere [ник или номер] (позвать игрока к себе), /cheat <код>",
+              "In the game: /tp [nickname or number] (go to a player), /tphere [nickname or number] (bring a player to you), /cheat <code>");
     } else if (cmd == "players" || cmd == "status") {
         for (auto& o : m_players) {
             if (!o.joined) continue;
