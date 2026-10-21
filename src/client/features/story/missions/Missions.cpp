@@ -160,6 +160,17 @@ bool g_waitSent = false;
 bool g_hostWaits = false;   // partner
 Area g_waitArea{};
 
+// The other way round: a partner stands in a mission marker, but only the host starts missions. The partner's game tells
+// the host (the same G_MISSION_WAIT, from a partner: a host of an older version ignores it), the host is told in the chat
+// and on screen, and sees that marker lit.
+struct PartnerWait {
+    Area area{};
+    uint64_t sinceMs = 0;
+};
+std::map<uint8_t, PartnerWait> g_partnersWaiting;  // host
+bool g_atMarkerSent = false;                       // partner
+uint64_t g_atMarkerCheckMs = 0;
+
 // partner
 struct PartnerBlip {
     int handle = 0;
@@ -372,7 +383,24 @@ void HandleMissionWait(uint8_t from, Reader& r) {
     bool on = r.U8() != 0;
     Area a{};
     if (on) a = {0x40000001u, r.F32(), r.F32(), r.F32(), r.F32(), r.F32(), 0};
-    if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    if (!r.Ok() || from == Net().MyId()) return;
+    if (Net().IsHost()) {  // a partner at a mission marker
+        bool was = g_partnersWaiting.count(from) != 0;
+        if (on) {
+            g_partnersWaiting[from] = {a, was ? g_partnersWaiting[from].sinceMs : NowMs()};
+            if (!was) {
+                LOGI("Player %u waits at a mission marker (%.1f,%.1f)", from, (a.x1 + a.x2) * 0.5f, (a.y1 + a.y2) * 0.5f);
+                ui::TheChat().AddSystem(Format(TR("%s хочет начать миссию: встаньте в маркер, который он ждёт.",
+                                                  "%s wants to start a mission: stand in the marker they are waiting at."),
+                                               Net().PeerName(from).c_str()));
+            }
+        } else if (was) {
+            g_partnersWaiting.erase(from);
+            LOGI("Player %u does not wait at the marker any more", from);
+        }
+        return;
+    }
+    if (from != Net().HostId()) return;
     if (on != g_hostWaits) LOGI(on ? "The host waits at a mission marker" : "The host does not wait at the marker any more");
     g_hostWaits = on;
     g_waitArea = a;  // the partner's game may not have this marker yet (story progress comes on reconnect)
@@ -1576,6 +1604,15 @@ public:
         Net().SetHandler(proto::G_SCENE_CAMERA, &HandleSceneCamera);
     }
 
+    // The markers partners wait at are lit in the host's game before its frame: a 3D marker shows only when it was placed
+    // before C3dMarkers::Update (CSpecialFX::Update, in CGame::Process), which makes it active; the rendering draws the
+    // active ones and then clears them, so one placed after the frame was cleared unseen.
+    void OnPreProcess() override {
+        if (!Net().Online() || !core::IsPlayerReady() || !Net().IsHost() || g_active) return;
+        for (auto& [id, w] : g_partnersWaiting)
+            g_origHighlight(w.area.id ^ 0x20000000u, w.area.x1, w.area.y1, w.area.x2, w.area.y2, w.area.z);
+    }
+
     void OnPostProcess() override {
         if (!Net().Online() || !core::IsPlayerReady()) return;
         if (Net().IsHost()) HostUpdate();
@@ -1623,6 +1660,8 @@ private:
         g_partnerMission = g_weFaded = g_weWide = g_onscreenSet = false;
         g_waitSent = g_hostWaits = false;
         g_waitMs = 0;
+        g_partnersWaiting.clear();
+        g_atMarkerSent = false;
         if (g_sceneWatching) StopWatchingScene();
         g_sceneOn = g_sceneOptOut = g_sceneSent = false;
         g_csState = 0;
@@ -1690,6 +1729,10 @@ private:
             g_progressAt = 0;
             flow::WorldProgressed();
         }
+
+        // the markers partners wait at are lit here too (OnPreProcess, before the game's frame); gone with a partner who left
+        for (auto it = g_partnersWaiting.begin(); it != g_partnersWaiting.end();)
+            it = Net().Peers().count(it->first) ? std::next(it) : g_partnersWaiting.erase(it);
 
         // the partner's screen shows where the host waits
         bool waiting = !active && NowMs() - g_waitMs < 1500;
@@ -1773,6 +1816,24 @@ private:
     static void PartnerUpdate() {
         UpdatePartnerCutscene();
         PartnerSceneUpdate();
+        // in a mission marker the host is told (its game starts the mission once the host stands in it too)
+        if (NowMs() - g_atMarkerCheckMs >= 250) {
+            g_atMarkerCheckMs = NowMs();
+            Area at{};
+            CPlayerPed* me = FindPlayerPed(0);
+            bool atMarker = me && flow::InHostWorld() && !HostMissionRecent(0) && !g_hostWaits && !me->InVehicle() &&
+                            MarkerAt(me->GetPosition(), at);
+            if (atMarker != g_atMarkerSent) {
+                g_atMarkerSent = atMarker;
+                LOGI(atMarker ? "At a mission marker (%.1f,%.1f): the host is told" : "Left the mission marker", (at.x1 + at.x2) * 0.5f,
+                     (at.y1 + at.y2) * 0.5f);
+                Writer w(proto::G_MISSION_WAIT);
+                w.U8(atMarker);
+                if (atMarker)
+                    for (float f : {at.x1, at.y1, at.x2, at.y2, at.z}) w.F32(f);
+                Net().Send(proto::CH_RELIABLE, w);
+            }
+        }
         if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
         // markers are drawn every frame while the host keeps them (stale after 1 s: host gone/paused)
         if (NowMs() - g_partnerAreasMs < 1000)
@@ -1837,15 +1898,24 @@ bool CutsceneSkipDecline() {
 
 std::string MissionWaitText() {
     if (!Net().Online()) return "";
-    if (Net().IsHost()) return g_waitSent ? TR("Ждём напарника", "Waiting for your partner") : "";
+    if (Net().IsHost()) {
+        if (g_waitSent) return TR("Ждём напарника", "Waiting for your partner");
+        for (auto& [id, w] : g_partnersWaiting)
+            if (Net().Peers().count(id))
+                return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(id).c_str());
+        return "";
+    }
     if (g_sceneWatching) return TR("Сцена хоста · Пробел — своя камера", "The host's scene · Space: your own camera");
     if (g_sceneOn && g_sceneOptOut)
         return TR("Сцена хоста · Пробел на месте — смотреть", "The host's scene · Space standing still: watch it");
     if (g_sceneOn)
         return TR("Хост смотрит сцену миссии · /tp — к хосту", "The host watches a mission scene · /tp: go to the host");
-    return g_hostWaits ? Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"),
-                                Net().PeerName(Net().HostId()).c_str())
-                       : "";
+    if (g_hostWaits)
+        return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(Net().HostId()).c_str());
+    if (g_atMarkerSent)
+        return Format(TR("Миссии начинает хост: %s получил приглашение", "The host starts missions: %s has been invited"),
+                      Net().PeerName(Net().HostId()).c_str());
+    return "";
 }
 
 bool HostReplicating() { return Replicating(); }
