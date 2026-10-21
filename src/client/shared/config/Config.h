@@ -20,6 +20,7 @@ struct ClientConfig {
 
     // [game]
     bool windowed = false;
+    bool borderless = false;          // windowed without a frame, the size of the screen (implies windowed)
     bool windowedStrict = false;      // test setups: quit at once if windowed mode could not be applied
     int windowX = -1, windowY = -1;   // -1 = centre
     int width = 0, height = 0;        // 0 = use the game's video mode

@@ -109,8 +109,18 @@ struct RwVideoMode {
 };
 constexpr int rwVIDEOMODEEXCLUSIVE = 1;
 
+// Borderless: a window without a frame covering the primary screen (the game's resolution is the screen's), Alt+Tab
+// as with any window, none of the fullscreen device losses
+void AdjustBorderless(HWND hwnd) {
+    SetWindowLongW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+    SetWindowLongW(hwnd, GWL_EXSTYLE, 0);
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN),
+                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+}
+
 void AdjustWindow(HWND hwnd, int w, int h) {
     auto& cfg = Cfg();
+    if (cfg.borderless) return AdjustBorderless(hwnd);
     LONG style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
     SetWindowLongW(hwnd, GWL_STYLE, style);
     SetWindowLongW(hwnd, GWL_EXSTYLE, 0);
@@ -242,7 +252,12 @@ void InstallWindowedMode() {
     auto& cfg = Cfg();
     g_winW = cfg.width > 0 ? cfg.width : 1280;
     g_winH = cfg.height > 0 ? cfg.height : 720;
-    FitToWorkArea(g_winW, g_winH);
+    if (cfg.borderless) {  // the screen's size, whatever width/height say
+        g_winW = GetSystemMetrics(SM_CXSCREEN);
+        g_winH = GetSystemMetrics(SM_CYSCREEN);
+    } else {
+        FitToWorkArea(g_winW, g_winH);
+    }
     HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll");
     if (!d3d9) d3d9 = LoadLibraryW(L"d3d9.dll");
     void* fn = d3d9 ? (void*)GetProcAddress(d3d9, "Direct3DCreate9") : nullptr;
@@ -515,7 +530,8 @@ void ApplyWindowPlacement() {
             TerminateProcess(GetCurrentProcess(), 3);
         }
     }
-    if (rc.right == g_winW && rc.bottom == g_winH && (style & WS_CAPTION) == WS_CAPTION) return;
+    bool framed = (style & WS_CAPTION) == WS_CAPTION;
+    if (rc.right == g_winW && rc.bottom == g_winH && framed != Cfg().borderless) return;
     static int attempts = 0;
     if (++attempts > 5) return;  // something keeps resizing the window: stop fighting it
     LOGI("Window placement: client %ldx%ld style %08lX -> %dx%d", rc.right, rc.bottom, style, g_winW, g_winH);

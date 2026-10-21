@@ -86,6 +86,7 @@ public:
 
     static Peds& Instance();
     NetPed* Find(game::CPed* ped);
+    const std::map<uint16_t, NetPed>& All() const { return m_byId; }
     game::CPed* FindOwned(uint16_t netId);  // our live ped announced under netId
     int HandleOf(uint16_t netId);            // script handle of the live ped (ours or a mirror), -1 if none
     // special character slots (models 290-299) are filled by name at run time

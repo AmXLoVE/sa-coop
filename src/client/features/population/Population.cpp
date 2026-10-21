@@ -34,28 +34,59 @@ bool CanTake(uint8_t who) {
 }
 
 // ---------------------------------------------------------------- the grid
-// A point belongs to the nearest player (in the same interior, in the game): only that player's game generates there.
-bool OtherPlayerNearer(const CVector& p, int8_t area) {
+// A point belongs to the nearest player (in the same interior, in the game) whose camera looks at it: the engine
+// generates peds and traffic mostly where its camera looks, so a point a nearer player turns his back on is left to
+// this game (two players looking north and south each fill their own view). Parked cars do not care where one looks.
+bool Flat(CVector& v) {
+    v.z = 0.0f;
+    float l = v.Length2D();
+    if (l < 0.001f) return false;
+    v = v * (1.0f / l);
+    return true;
+}
+bool Sees(const RemotePlayer& rp, const CVector& p) {
+    CVector to = p - (rp.state.pos + rp.state.cam.sourceOffset), front = rp.state.cam.front;
+    if (to.Length2D() < 15.0f) return true;
+    if (!Flat(to) || !Flat(front)) return true;
+    return to.x * front.x + to.y * front.y > 0.26f;  // within ~75 degrees of where it looks
+}
+bool OtherPlayerNearer(const CVector& p, int8_t area, bool byView) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return false;
     float local = (p - me->GetPosition()).Length2D();
     for (auto& [id, rp] : Players::Instance().All())
-        if (rp.hasState && rp.state.area == area && CanTake(id) && (rp.state.pos - p).Length2D() < local) return true;
+        if (rp.hasState && rp.state.area == area && CanTake(id) && (rp.state.pos - p).Length2D() < local &&
+            (!byView || Sees(rp, p)))
+            return true;
     return false;
 }
 
-// How much of this game's population area the others' cover: 1 alone, up to the number of players standing together.
-// The engine fills its quota in the part of the area left to it, so its density is divided by this.
+// How much of what this game's camera covers the others' cover too: 1 alone or looking elsewhere, up to the number of
+// players standing together looking the same way. Each engine fills its own quota there, so its density is divided by
+// this (the other games' peds there are not counted: see HookPopulationUpdate).
 float Overlap(float fullAt, float noneAt) {
     CPlayerPed* me = FindPlayerPed(0);
     if (!me) return 1.0f;
+    CVector myFront = cam::Front();
+    bool mine = Flat(myFront);
     float k = 1.0f;
     for (auto& [id, rp] : Players::Instance().All()) {
         if (!rp.hasState || rp.state.area != me->AreaCode() || !CanTake(id)) continue;
         float d = (rp.state.pos - me->GetPosition()).Length2D();
-        k += std::clamp((noneAt - d) / (noneAt - fullAt), 0.0f, 1.0f);
+        float near = std::clamp((noneAt - d) / (noneAt - fullAt), 0.0f, 1.0f);
+        CVector front = rp.state.cam.front;
+        float same = mine && Flat(front) ? std::max(0.0f, myFront.x * front.x + myFront.y * front.y) : 1.0f;
+        k += near * same;
     }
     return k;
+}
+
+// The engine counts every ped of its pool against its quota (CPed's constructor: CPopulation::UpdatePedCount), the
+// copies of the other games' peds too: near another player it stopped generating once their peds and its own made one
+// quota. For the generation the copies are taken off the counts, the game's own way, and put back after.
+void CountCopies(bool in) {
+    for (auto& [id, np] : Peds::Instance().All())
+        if (np.owner != Net().MyId() && np.ped && IsPedValid(np.ped)) Call<0x611570>(np.ped, !in);  // UpdatePedCount
 }
 
 bool GridOn() { return Net().Online() && core::IsPlayerReady() && !Players::Instance().All().empty(); }
@@ -86,14 +117,16 @@ void __cdecl HookPopulationUpdate(bool generate) {
     density = saved / Overlap(25.0f, 110.0f);
     CPoolHeader* pool = PedPool();
     auto before = Slots(pool);
+    CountCopies(false);
     g_origPopUpdate(generate);
+    CountCopies(true);
     density = saved;
     // the new random peds on another player's side go at once, before anything else sees them
     for (int i = 0; i < pool->size; ++i) {
         if (!IsNew(pool, before, i)) continue;
         auto* ped = (CPed*)(pool->objects + (size_t)i * kPedPoolElemSize);
         if (ped->CreatedBy() != PED_GAME || ped->IsPlayer() || ped->InVehicle() || ped->PedType() == PED_TYPE_COP) continue;
-        if (!OtherPlayerNearer(ped->GetPosition(), ped->AreaCode())) continue;
+        if (!OtherPlayerNearer(ped->GetPosition(), ped->AreaCode(), true)) continue;
         Call<0x610F20>(ped);  // CPopulation::RemovePed
         ++g_droppedPeds;
     }
@@ -114,7 +147,7 @@ void __cdecl HookGenerateRandomCars() {
         if (!IsNew(pool, before, i)) continue;
         auto* v = (CVehicle*)(pool->objects + (size_t)i * kVehiclePoolElemSize);
         if (v->CreatedBy() != 1 /* RANDOM_VEHICLE */ || IsLawVehicle(v->ModelIndex())) continue;
-        if (!OtherPlayerNearer(v->GetPosition(), v->AreaCode())) continue;
+        if (!OtherPlayerNearer(v->GetPosition(), v->AreaCode(), true)) continue;
         // the engine's own way to drop a random car with its people (CCarCtrl::RemoveCarsIfThePoolGetsFull)
         Call<0x563280>((CEntity*)v);  // CWorld::Remove
         using DeleteFn = void(__fastcall*)(void*, void*, int);
@@ -129,7 +162,7 @@ GenProcessFn g_origGenProcess = nullptr;
 void __fastcall HookCarGeneratorProcess(void* gen, void* edx) {
     if (GridOn() && Field<int16_t>(gen, 0x18) == -1) {  // m_nVehicleHandle: none made yet
         CVector p{Field<int16_t>(gen, 4) / 8.0f, Field<int16_t>(gen, 6) / 8.0f, Field<int16_t>(gen, 8) / 8.0f};
-        if (OtherPlayerNearer(p, FindPlayerPed(0)->AreaCode())) return;
+        if (OtherPlayerNearer(p, FindPlayerPed(0)->AreaCode(), false)) return;
     }
     g_origGenProcess(gen, edx);
 }
