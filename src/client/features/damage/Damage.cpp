@@ -12,7 +12,8 @@
 //    and the NPC's mirror there only plays the animation (its gunfire needs nothing: the mirror there shoots for real);
 //  * a ped killed by the other player drops its money and weapon in the killer's game, where the killer is;
 //  * a crime is charged by the game of whoever committed it: the owner keeps its own player's wanted level when it
-//    applies the other player's hit, and the hitter's game reports the crime itself;
+//    applies the other player's hit, the crimes the game reads off events never charge this player for the other one,
+//    and the hitter's game reports the crime itself;
 //  * a kill counts (stats, respect, rampages, gang war provocation) in the killer's game: the owner of the ped tells it.
 //    The gang wars run in the host's game only, so the partner's kills of the enemy gangs near the host provoke them there;
 //  * the players hurt each other only with friendly fire (the host's choice). The shooter's game reports its bullets
@@ -225,6 +226,28 @@ void __cdecl HookRegisterKill(CPed* ped, CEntity* killer, int weapon, bool heads
     g_origRegisterKill(ped, killer, weapon, headshot);
 }
 
+// The crimes the game reads off events (CEventGroup::Add -> ReportCriminalEvent) go to the player in focus
+// (FindPlayerWanted), whoever committed them. The ones of the other player were charged to this game's player: a ped it
+// hit tells its gang and friends later (CInformGroupEventQueue, CInformFriendsEventQueue: past KeepWanted), and its
+// car's knocks were never guarded. Partners near the host gave the host their stars. A crime of the other player, or of
+// the car it drives, is left to its own game, which reports it itself; this game's own crimes are untouched.
+using ReportCriminalFn = void(__fastcall*)(void*, void*, CPed*);
+ReportCriminalFn g_origDamageCrime = nullptr, g_origVehicleDamageCrime = nullptr, g_origHitAndRunCrime = nullptr,
+                 g_origKnockOffBikeCrime = nullptr;
+bool OtherPlayersCrime(CEntity* offender) { return Net().Online() && IsRemotePlayerEntity(offender); }
+void __fastcall HookDamageCrime(void* ev, void* edx, CPed* ped) {  // CEventDamage: m_pSourceEntity +0x14
+    if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x14))) g_origDamageCrime(ev, edx, ped);
+}
+void __fastcall HookVehicleDamageCrime(void* ev, void* edx, CPed* ped) {  // CEventVehicleDamage: m_attacker +0x18
+    if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x18))) g_origVehicleDamageCrime(ev, edx, ped);
+}
+void __fastcall HookHitAndRunCrime(void* ev, void* edx, CPed* ped) {  // CEventVehicleHitAndRun: m_vehicle +0x10
+    if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x10))) g_origHitAndRunCrime(ev, edx, ped);
+}
+void __fastcall HookKnockOffBikeCrime(void* ev, void* edx, CPed* ped) {  // CEventKnockOffBike: m_ped +0x30
+    if (!OtherPlayersCrime(Field<CEntity*>(ev, 0x30))) g_origKnockOffBikeCrime(ev, edx, ped);
+}
+
 void HandleDamage(uint8_t from, Reader& r) {
     uint8_t kind = r.U8(), owner = r.U8();
     uint16_t netId = r.U16();
@@ -292,6 +315,10 @@ public:
         mem::HookFn(0x6D7C90, &HookInflictDamage, &g_origInflictDamage, "CVehicle::InflictDamage");
         mem::HookFn(0x5F0360, &HookKillPedWithCar, &g_origKillWithCar, "CPed::KillPedWithCar");
         mem::HookFn(0x4B9340, &HookRegisterKill, &g_origRegisterKill, "CEventHandler::RegisterKill");
+        mem::HookFn(0x4B3440, &HookDamageCrime, &g_origDamageCrime, "CEventDamage::ReportCriminalEvent");
+        mem::HookFn(0x4B50B0, &HookVehicleDamageCrime, &g_origVehicleDamageCrime, "CEventVehicleDamage::ReportCriminalEvent");
+        mem::HookFn(0x4B27D0, &HookHitAndRunCrime, &g_origHitAndRunCrime, "CEventVehicleHitAndRun::ReportCriminalEvent");
+        mem::HookFn(0x4B4E80, &HookKnockOffBikeCrime, &g_origKnockOffBikeCrime, "CEventKnockOffBike::ReportCriminalEvent");
         Net().SetHandler(proto::G_DAMAGE, &HandleDamage);
     }
 };
