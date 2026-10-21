@@ -134,6 +134,10 @@ enum MsgId : uint8_t {
     G_WATER_CANNON = 141,     // unreliable: u16 vehicle, the jet's offset from it and speed (a fire truck shoots water)
     G_TRAIN = 142,            // a train of the sender's game (u8 op, u16 id; state: kind, track, direction, rails, speed,
                               // pos), unreliable; gone: reliable
+    G_SCRIPT_ANIM = 144,      // reliable: the animation a script plays on the sender's player (shops, gym, parachute):
+                              // u8 on[, u16 block, u16 index, u16 flags, f32 time]
+    G_PED_SCRIPT_ANIM = 145,  // reliable: the same for a ped of the sender's own script near a partner (a cashier, a
+                              // barber), every game has its own: u16 model, vec spot, i8 area, then as G_SCRIPT_ANIM
     G_SCENE_CAMERA = 143,     // host: its mission's script holds the camera (a scene on the engine, not a cutscene):
                               // u8 on[, vec source, vec front, vec up, f32 fov, u8 cut]; unreliable while on, reliable off
 
