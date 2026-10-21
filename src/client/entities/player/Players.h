@@ -38,6 +38,9 @@ struct RemotePlayer {
     uint64_t jetpackMs = 0;     // when it was last given the jetpack
     std::vector<uint8_t> stats; // owner's CStats block (G_PLAYER_STATS): used while the ped is processed
     uint64_t heardMs = 0;       // its last voice frame was played (set by the voice feature)
+    // its own CPlayerPedData (0xAC bytes: chosen weapon, look pitch, fight moves, wanted, clothes...): every remote
+    // player is made in the same CWorld::Players slot, whose data they all shared (see Players.cpp)
+    uint8_t* ownData = nullptr;
 };
 
 class Players : public Module {
