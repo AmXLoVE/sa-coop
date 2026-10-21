@@ -133,6 +133,8 @@ enum MsgId : uint8_t {
     G_WATER_CANNON = 141,     // unreliable: u16 vehicle, the jet's offset from it and speed (a fire truck shoots water)
     G_TRAIN = 142,            // a train of the sender's game (u8 op, u16 id; state: kind, track, direction, rails, speed,
                               // pos), unreliable; gone: reliable
+    G_SCENE_CAMERA = 143,     // host: its mission's script holds the camera (a scene on the engine, not a cutscene):
+                              // u8 on[, vec source, vec front, vec up, f32 fov, u8 cut]; unreliable while on, reliable off
 
     G_VOICE = 200,            // unreliable: voice frame
     G_LAST = 255,

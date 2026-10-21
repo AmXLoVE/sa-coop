@@ -1332,7 +1332,7 @@ bool Players::OnCommand(const std::string& cmd, const std::vector<std::string>& 
     if (!args.empty()) {
         target = nullptr;
         std::string want = ToLower(args[0]);
-        bool number = !want.empty() && want.size() <= 3 && std::all_of(want.begin(), want.end(), ::isdigit);
+        bool number = !want.empty() && want.size() <= 3 && std::all_of(want.begin(), want.end(), [](char c) { return c >= '0' && c <= '9'; });  // a nickname may be UTF-8
         RemotePlayer* prefix = nullptr;
         int prefixes = 0;
         for (auto& [id, rp] : m_remote) {

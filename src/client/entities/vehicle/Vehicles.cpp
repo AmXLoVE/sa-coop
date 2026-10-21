@@ -25,6 +25,14 @@ Vehicles& Vehicles::Instance() {
 }
 
 namespace {
+// The lock of a mirror. A random car locked there does not lock the other players out; a mission's locked car (2) stays
+// shut for them too. "Locked with the player inside" (4, CARLOCK_LOCKED_PLAYER_INSIDE: nobody opens it from outside, the
+// player in it cannot get out) is a mission's way to keep its CJ in the car: it is the owner's player's, not the
+// partners'. Copied as it was, the partners could not get into the host's mission car (Sweet's car, "Tagging Up Turf").
+uint8_t MirrorLock(uint8_t lock, bool script) {
+    if (lock == 4) return 1;
+    return lock == 2 && !script ? 1 : lock;
+}
 struct Reg {
     Reg() { core::RegisterModule(&Vehicles::Instance()); }
 } g_reg;
@@ -240,7 +248,7 @@ void Vehicles::ApplyLook(NetVehicle& nv) {
     else if (v->VehicleSubClass() == VEHICLE_TYPE_BIKE) memcpy((uint8_t*)v + kBikeTyres, nv.look.bikeTyres, 2);
     // the lock it had when it became known stayed: a mission car locked then held the partner who got in, after the
     // mission it was opened only in the owner's game (the Savanna of "Cesar Vialpando"); same rule as at the spawn
-    v->DoorLock() = nv.look.lock == 2 && !nv.script ? 1 : nv.look.lock;
+    v->DoorLock() = MirrorLock(nv.look.lock, nv.script);
 }
 
 void Vehicles::TakeOwnership(NetVehicle& nv) {
@@ -292,7 +300,7 @@ CVehicle* Vehicles::SpawnMirror(const VehicleSpawn& sp) {
     v->Health() = sp.health;
     v->AreaCode() = sp.area;
     // a random car locked there does not lock the other player out; a mission's locked car stays shut for him too
-    v->DoorLock() = sp.lockState == 2 && !sp.script ? 1 : sp.lockState;
+    v->DoorLock() = MirrorLock(sp.lockState, sp.script);
     return v;
 }
 
