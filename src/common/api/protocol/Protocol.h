@@ -13,7 +13,7 @@
 
 namespace coop::proto {
 
-constexpr int kMaxPlayers = 4;  // hard protocol limit (the game client supports 2 at the moment)
+constexpr int kMaxPlayers = 8;  // hard limit of a session, the host included (the 4-bit owner part of net ids allows 15)
 constexpr uint8_t kServerId = 255;
 constexpr size_t kMaxChatLen = 160;
 constexpr size_t kWorldChunk = 16 * 1024;
