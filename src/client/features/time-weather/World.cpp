@@ -36,6 +36,16 @@ using SetClockFn = void(__cdecl*)(uint8_t, uint8_t, uint8_t);
 SetClockFn g_origSetClock = nullptr;
 void __cdecl HookPassTimeClock(uint8_t hours, uint8_t minutes, uint8_t day) {
     if (Net().Online() && !Net().IsHost() && flow::InHostWorld()) return;
+    // The host's death or arrest (12 h, the only pass of that length) moved the clock of everybody in the middle of
+    // their day: while partners play, it does not. A save (6 h) still passes time: players save to wait for the
+    // hours of a mission (the night of the burglaries).
+    if (Net().Online() && Net().IsHost() && !Net().Peers().empty()) {
+        int now = ClockHours() * 60 + ClockMinutes(), then = hours * 60 + minutes;
+        if (((then - now) % 1440 + 1440) % 1440 == 720) {
+            LOGI("The host's death or arrest does not move the shared clock (%02d:%02d stays)", ClockHours(), ClockMinutes());
+            return;
+        }
+    }
     g_origSetClock(hours, minutes, day);
 }
 
