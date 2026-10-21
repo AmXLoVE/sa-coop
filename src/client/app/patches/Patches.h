@@ -14,6 +14,9 @@ bool GameMouseEnabled();
 // Windowed mode: restores our window style/size if the game or RW changed it (called each second).
 void ApplyWindowPlacement();
 
+// A window in the background plays without input (called every game frame before CGame::Process).
+void MuteBackgroundInput();
+
 // Fixes a stack bug in the inline hooks of plugins built with an old "injector" (they load until the game starts).
 void FixPluginWrappers();
 

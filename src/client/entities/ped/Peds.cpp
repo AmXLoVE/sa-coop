@@ -204,7 +204,31 @@ void __fastcall HookSetMoveAnim(CPed* ped, void* edx) {
     if (NetPed* np = Peds::Instance().Find(ped); np && np->owner != Net().MyId() && np->animFull) return;
     g_origSetMoveAnim(ped, edx);
 }
+
+// The game builds the list of a ped's animations for the frame from those that stay (a faded one with auto removal is
+// deleted on the way), and its velocity extraction takes the first entry of that list without looking (0x4D1750):
+// a ped left with no animation at all crashes the game. A ped of the game always keeps its stance or walk under the
+// rest; a mirror does not: its full-body action (a fight stance) fades out when the owner's ends, while its move
+// animation was held back (HookSetMoveAnim) and its game does not start one again until the move state changes.
+// Every game that mirrored the fight crashed half a second after the last punch. A mirror always keeps one full-body
+// animation that stays: when none does, it gets the stance of its walk set, as the game would give it.
+bool HasLastingBaseAnim(CPed* ped) {
+    for (void* a = anim::First(ped->RwObject()); a; a = anim::Next(a))
+        if (!(anim::Flags(a) & anim::F_PARTIAL) && anim::BlendDelta(a) >= 0.0f) return true;
+    return false;
+}
 }  // namespace
+
+void Peds::KeepBaseAnim(NetPed& np) {
+    CPed* ped = np.ped;
+    if (!ped || !IsAlive(np) || ped->InVehicle() || IsPedDead(ped) || !ped->RwObject() || HasLastingBaseAnim(ped)) return;
+    int group = Field<int32_t>(ped, 0x4D4);  // CPed::m_nAnimGroup: its walk set
+    if (Call<0x4D4610, void*>(ped->RwObject(), group, 3 /* ANIM_ID_IDLE */, 4.0f)) {  // CAnimManager::BlendAnimation
+        np.baseBlock = kNoAnim;
+        np.animFull = false;
+        LOGD("Mirror %04X had no lasting animation: its stance (group %d) is back", np.netId, group);
+    }
+}
 
 void Peds::RememberSpecialModel(int model, const char* name) {
     if (model >= kSpecialFirst && model <= kSpecialLast) m_specialNames[model] = name;
@@ -756,7 +780,10 @@ void Peds::ApplyMirror(NetPed& np) {
 void Peds::OnPreProcess() {
     if (!Net().Online() || !core::IsPlayerReady()) return;
     for (auto& [id, np] : m_byId)
-        if (np.owner != Net().MyId()) ApplyMirror(np);
+        if (np.owner != Net().MyId()) {
+            ApplyMirror(np);
+            KeepBaseAnim(np);
+        }
 }
 
 void Peds::OnPostProcess() {

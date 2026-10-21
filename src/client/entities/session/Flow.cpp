@@ -185,7 +185,7 @@ void SaveConnectSettings() {
 Phase GetPhase() { return g_phase; }
 const std::string& LastError() { return g_error; }
 
-std::wstring PartnerWorldPath() { return Cfg().coopDir + L"world\\partner_world.b"; }
+std::wstring PartnerWorldPath() { return Cfg().worldDir + L"partner_world.b"; }
 
 std::string StatusText() {
     auto& net = Net();
@@ -270,7 +270,7 @@ void Host(int slot, uint16_t port, const std::string& password) {
         }
     } else if (slot == 0 && core::IsPlayerReady()) {
         std::vector<uint8_t> snap;
-        if (core::SaveWorldSnapshot(snap)) world = Cfg().coopDir + L"world\\host_snapshot.b";
+        if (core::SaveWorldSnapshot(snap)) world = Cfg().worldDir + L"host_snapshot.b";
     }
     StopServerProcess();
     if (!StartServerProcess(world, slot < 0)) return;
@@ -550,7 +550,7 @@ void LoadHostWorld(const std::vector<uint8_t>& data) {
                 "need the same game version and the same mods that change the story."));
         return;
     }
-    EnsureDirectory(Cfg().coopDir + L"world");
+    EnsureDirectory(Cfg().worldDir);
     std::wstring path = PartnerWorldPath();
     if (!WriteFileBytes(path, data.data(), data.size())) {
         Fail(TR("Не удалось записать сохранение мира на диск.", "Could not write the world save to disk."));

@@ -53,6 +53,7 @@ struct ClientConfig {
     std::wstring coopDir;             // directory with coop.dll (…\coop\)
     std::wstring gameDir;             // directory with gta_sa.exe
     std::wstring iniPath;
+    std::wstring worldDir;            // folder of the world saves (the host snapshot, the partner copy), ends with a slash
 
     bool Load(const std::wstring& coopDirectory);
 };

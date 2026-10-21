@@ -65,6 +65,7 @@ void CommonFrame();
 
 void __cdecl HookGameProcess() {
     ++g_frameNo;
+    patches::MuteBackgroundInput();
     CommonFrame();
     for (auto* m : Modules()) m->OnPreProcess();
     g_origGameProcess();
@@ -425,8 +426,8 @@ bool SavingSnapshot() { return g_snapshot; }
 bool SaveWorldSnapshot(std::vector<uint8_t>& out) {
     // the game never saves with the player in a vehicle: loading such a save leaves no player
     if (!IsPlayerReady() || IsOnMission() || game::FindPlayerPed(0)->InVehicle()) return false;
-    std::wstring tmp = Cfg().coopDir + L"world\\host_snapshot.b";
-    EnsureDirectory(Cfg().coopDir + L"world");
+    std::wstring tmp = Cfg().worldDir + L"host_snapshot.b";
+    EnsureDirectory(Cfg().worldDir);
     std::string ansi = ToAnsiPath(tmp);
     if (ansi.size() >= 250) return false;
     // CGenericGameStorage::ms_SaveFileName — GenericSave writes to this path
@@ -463,7 +464,11 @@ void Init(void* hModule) {
     LOGI("%s %s (protocol %u) loaded, coop dir: %s, config: %s", COOP_NAME, COOP_VERSION_STR, kProtocolVersion,
          WideToUtf8(coopDir).c_str(), WideToUtf8(cfg.iniPath).c_str());
     if (!cfg.verboseLog) log::SetMinLevel(log::Level::Info);
-    InstallCrashHandler(coopDir);
+    // the usual config writes coop\crash.log; another one (SACOOP_CONFIG: several game copies on one PC) writes
+    // <its name>-crash.log next to it, so the copies do not overwrite each other's crash reports
+    InstallCrashHandler(_wcsicmp(cfg.iniPath.c_str(), (coopDir + L"coop.ini").c_str()) == 0
+                            ? coopDir + L"crash.log"
+                            : cfg.iniPath.substr(0, cfg.iniPath.size() - 4) + L"-crash.log");
     if (cfg.verboseLog) StartHangDetector(15);
 
     // only gta_sa.exe 1.0 US is supported: every address in this mod is version specific

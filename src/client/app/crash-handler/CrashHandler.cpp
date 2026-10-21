@@ -101,7 +101,15 @@ LONG WINAPI VectoredHandler(EXCEPTION_POINTERS* ep) {
 
 LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* ep) {
     WriteReport(ep, false);
-    return g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
+    LONG r = g_prevFilter ? g_prevFilter(ep) : EXCEPTION_CONTINUE_SEARCH;
+    // Nobody took it: Windows Error Reporting would come next, and with a window in the background (several game
+    // copies on one PC) its dialog may never show: the game's window was gone while the process stayed, holding its
+    // files and the server it started. The report is written: the process ends here.
+    if (r == EXCEPTION_CONTINUE_SEARCH) {
+        LOGE("Unhandled exception %08X: the game closes (see crash.log)", (unsigned)ep->ExceptionRecord->ExceptionCode);
+        TerminateProcess(GetCurrentProcess(), ep->ExceptionRecord->ExceptionCode);
+    }
+    return r;
 }
 
 void DumpThread(DWORD tid, const char* why) {
@@ -159,8 +167,8 @@ void StartHangDetector(unsigned seconds) {
     CreateThread(nullptr, 0, HangThread, nullptr, 0, nullptr);
 }
 
-void InstallCrashHandler(const std::wstring& coopDir) {
-    g_crashPath = coopDir + L"crash.log";
+void InstallCrashHandler(const std::wstring& crashLogPath) {
+    g_crashPath = crashLogPath;
     AddVectoredExceptionHandler(0, VectoredHandler);
     g_prevFilter = SetUnhandledExceptionFilter(UnhandledFilter);
 }

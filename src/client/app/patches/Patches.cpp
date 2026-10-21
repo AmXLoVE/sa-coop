@@ -42,7 +42,9 @@ void __cdecl HookIdleMouseSetPos(void* pos) {
 using PadFn = void(__fastcall*)(void*, void*);
 PadFn g_origUpdateMouse = nullptr;
 void __fastcall HookUpdateMouse(void* self, void* edx) {
-    if (ui::In().MouseCaptured()) {
+    // our menu has the mouse, or the window is in the background (the game reads the mouse through DirectInput, which
+    // may answer a window in the background too): the game sees no mouse
+    if (ui::In().MouseCaptured() || (Cfg().runInBackground && !game::IsForeground())) {
         memset((void*)0xB73418, 0, 0x14);  // CPad::NewMouseControllerState
         memset((void*)0xB7342C, 0, 0x14);  // CPad::OldMouseControllerState
         return;
@@ -56,6 +58,28 @@ void __fastcall HookUpdateMouse(void* self, void* edx) {
 // CAudioEngine::InitialisePostLoading waits for it forever). CAEAudioHardware::Service asks too, but throws the
 // answer away (eax is overwritten at 0x4D987A): its redirect changes nothing.
 bool __cdecl AudioIsForegroundApp() { return true; }
+
+// The game reads the shift keys straight from Windows every frame (GetAsyncKeyState: a key message does not tell the
+// left one from the right one), whichever window has the focus. Paused in the background, the game never noticed;
+// running there it took the Shift pressed in another window: its player jumped (several game copies on one PC, or
+// Shift typed in a chat program meanwhile). The game's own reads see no key while its window is in the background;
+// those of this mod and of other plugins are left alone.
+using KeyStateFn = SHORT(WINAPI*)(int);
+KeyStateFn g_origGetAsyncKeyState = nullptr, g_origGetKeyState = nullptr;
+uintptr_t g_exeBegin = 0, g_exeEnd = 0;
+
+bool GameAsksInBackground(void* caller) {
+    auto at = (uintptr_t)caller;
+    return at >= g_exeBegin && at < g_exeEnd && !game::IsForeground();
+}
+SHORT WINAPI HookGetAsyncKeyState(int key) {
+    if (GameAsksInBackground(__builtin_return_address(0))) return 0;
+    return g_origGetAsyncKeyState(key);
+}
+SHORT WINAPI HookGetKeyState(int key) {
+    if (GameAsksInBackground(__builtin_return_address(0))) return 0;
+    return g_origGetKeyState(key);
+}
 
 using VoidFn = void(__cdecl*)();
 VoidFn g_origStartUserPause = nullptr;
@@ -513,6 +537,13 @@ void Apply() {
         else LOGW("Background patch skipped: unexpected bytes at 0x748A8D (another mod?)");
         mem::RedirectCall(0x4D9875, (void*)&AudioIsForegroundApp, nullptr);  // CAEAudioHardware::Service
         mem::RedirectCall(0x4F15E1, (void*)&AudioIsForegroundApp, nullptr);  // CAEStreamThread::MainLoop
+        // no keys for the game while its window is in the background (the shift keys it reads from Windows)
+        auto exe = (uintptr_t)GetModuleHandleW(nullptr);
+        auto* nt = (IMAGE_NT_HEADERS*)(exe + ((IMAGE_DOS_HEADER*)exe)->e_lfanew);
+        g_exeBegin = exe;
+        g_exeEnd = exe + nt->OptionalHeader.SizeOfImage;
+        HookExport(L"user32.dll", "GetAsyncKeyState", &HookGetAsyncKeyState, &g_origGetAsyncKeyState);
+        HookExport(L"user32.dll", "GetKeyState", &HookGetKeyState, &g_origGetKeyState);
     }
     mem::HookFn(0x57C520, &HookCentreMousePointer, &g_origCentreMouse, "CMenuManager::CentreMousePointer");
     mem::RedirectCallFn(0x53E9F1, &HookIdleMouseSetPos, &g_origIdleMouseSetPos);  // Idle -> RsMouseSetPos
@@ -532,6 +563,18 @@ void Apply() {
         if (userDir.size() > 1 && userDir[1] != L':' && userDir[0] != L'\\') userDir = cfg.coopDir + userDir;
         SetUserDir(userDir);
     }
+}
+
+void MuteBackgroundInput() {
+    // Running in the background, the game still reads input that is not addressed to its window (the shift keys it
+    // asks Windows for every frame, the mouse through DirectInput): with several copies on one PC a Shift pressed in
+    // one window made the players of all of them jump. A window in the background plays without input: the keyboard
+    // state, the pads and the mouse are released every frame before the game uses them.
+    if (!Cfg().runInBackground || game::IsForeground() || game::GameState() != game::GAME_STATE_IDLE) return;
+    ui::In().ClearGameKeys();
+    memset(&game::GetPad(1)->NewState, 0, sizeof(game::GetPad(1)->NewState));
+    memset(&game::GetPad(1)->OldState, 0, sizeof(game::GetPad(1)->OldState));
+    memset((void*)0xB73418, 0, 0x28);  // CPad::NewMouseControllerState and OldMouseControllerState
 }
 
 }  // namespace coop::patches

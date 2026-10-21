@@ -1,6 +1,16 @@
 #include "shared/game/Game.h"
 
+#include <windows.h>
+#undef GetObject  // windows.h renames it GetObjectA: game::GetObject is the script handle lookup
+
 namespace game {
+
+bool IsForeground() {
+    HWND fg = GetForegroundWindow();
+    DWORD pid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId();
+}
 
 CPoolHeader* PedPool() { return Ref<CPoolHeader*>(addr::PedPool); }
 CPoolHeader* VehiclePool() { return Ref<CPoolHeader*>(addr::VehiclePool); }

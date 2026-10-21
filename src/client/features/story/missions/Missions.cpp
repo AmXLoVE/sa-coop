@@ -155,6 +155,17 @@ bool g_waitSent = false;
 bool g_hostWaits = false;   // partner
 Area g_waitArea{};
 
+// The other way round: a partner stands in a mission marker, but only the host starts missions. The partner's game tells
+// the host (the same G_MISSION_WAIT, from a partner: a host of an older version ignores it), the host is told in the chat
+// and on screen, and sees that marker lit.
+struct PartnerWait {
+    Area area{};
+    uint64_t sinceMs = 0;
+};
+std::map<uint8_t, PartnerWait> g_partnersWaiting;  // host
+bool g_atMarkerSent = false;                       // partner
+uint64_t g_atMarkerCheckMs = 0;
+
 // partner
 struct PartnerBlip {
     int handle = 0;
@@ -367,7 +378,24 @@ void HandleMissionWait(uint8_t from, Reader& r) {
     bool on = r.U8() != 0;
     Area a{};
     if (on) a = {0x40000001u, r.F32(), r.F32(), r.F32(), r.F32(), r.F32(), 0};
-    if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    if (!r.Ok() || from == Net().MyId()) return;
+    if (Net().IsHost()) {  // a partner at a mission marker
+        bool was = g_partnersWaiting.count(from) != 0;
+        if (on) {
+            g_partnersWaiting[from] = {a, was ? g_partnersWaiting[from].sinceMs : NowMs()};
+            if (!was) {
+                LOGI("Player %u waits at a mission marker (%.1f,%.1f)", from, (a.x1 + a.x2) * 0.5f, (a.y1 + a.y2) * 0.5f);
+                ui::TheChat().AddSystem(Format(TR("%s хочет начать миссию: встаньте в маркер, который он ждёт.",
+                                                  "%s wants to start a mission: stand in the marker they are waiting at."),
+                                               Net().PeerName(from).c_str()));
+            }
+        } else if (was) {
+            g_partnersWaiting.erase(from);
+            LOGI("Player %u does not wait at the marker any more", from);
+        }
+        return;
+    }
+    if (from != Net().HostId()) return;
     if (on != g_hostWaits) LOGI(on ? "The host waits at a mission marker" : "The host does not wait at the marker any more");
     g_hostWaits = on;
     g_waitArea = a;  // the partner's game may not have this marker yet (story progress comes on reconnect)
@@ -567,6 +595,18 @@ void HandleText(uint8_t from, Reader& r) {
 }
 
 // ---------------------------------------------------------------- markers
+// A story mission's start marker is the red cylinder of a contact point blip, which CRadar::Draw3dMarkers (0x585BF0..
+// 0x585FE0) leaves out while this player is on a mission (CTheScripts::IsPlayerOnAMission). A partner's mission is the
+// host's, not one of its own game: the marker stayed there all through it. For that drawing the partner is on the
+// host's mission.
+using OnMissionFn = bool(__cdecl*)();
+OnMissionFn g_origOnMission = nullptr;
+bool __cdecl HookIsPlayerOnAMission() {
+    auto from = (uintptr_t)__builtin_return_address(0);
+    if (from >= 0x585BF0 && from < 0x585FE0 && Net().Online() && !Net().IsHost() && HostMissionRecent(0)) return true;
+    return g_origOnMission();
+}
+
 using HighlightFn = void(__cdecl*)(uint32_t, float, float, float, float, float);
 HighlightFn g_origHighlight = nullptr;
 void __cdecl HookHighlight(uint32_t id, float x1, float y1, float x2, float y2, float z) {
@@ -1361,6 +1401,7 @@ public:
         mem::HookFn(0x69E5F0, &HookBigNum, &g_origBigNum, "CMessages::AddBigMessageWithNumber");
         mem::HookFn(0x69E6E0, &HookBigQNum, &g_origBigQNum, "CMessages::AddBigMessageWithNumberQ");
         mem::HookFn(0x588BE0, &HookHelp, &g_origHelp, "CHud::SetHelpMessage");
+        mem::HookFn(0x464D50, &HookIsPlayerOnAMission, &g_origOnMission, "CTheScripts::IsPlayerOnAMission");
         mem::HookFn(0x69DCD0, &HookClear, &g_origClear, "CMessages::ClearMessages");
         mem::HookFn(0x69DD30, &HookClearSmall, &g_origClearSmall, "CMessages::ClearSmallMessagesOnly");
         mem::HookFn(0x485E00, &HookHighlight, &g_origHighlight, "CTheScripts::HighlightImportantArea");
@@ -1429,6 +1470,8 @@ private:
         g_partnerMission = g_weFaded = g_weWide = g_onscreenSet = false;
         g_waitSent = g_hostWaits = false;
         g_waitMs = 0;
+        g_partnersWaiting.clear();
+        g_atMarkerSent = false;
         g_csState = 0;
         g_inScene = false;
         g_csCar = g_csSeat = -1;
@@ -1493,6 +1536,17 @@ private:
         if (g_progressAt && !active && NowMs() >= g_progressAt) {
             g_progressAt = 0;
             flow::WorldProgressed();
+        }
+
+        // the markers partners wait at are lit here too (gone with a partner who left)
+        for (auto it = g_partnersWaiting.begin(); it != g_partnersWaiting.end();) {
+            if (!Net().Peers().count(it->first)) {
+                it = g_partnersWaiting.erase(it);
+                continue;
+            }
+            const Area& wa = it->second.area;
+            if (!active) g_origHighlight(wa.id ^ 0x20000000u, wa.x1, wa.y1, wa.x2, wa.y2, wa.z);
+            ++it;
         }
 
         // the partner's screen shows where the host waits
@@ -1574,6 +1628,24 @@ private:
 
     static void PartnerUpdate() {
         UpdatePartnerCutscene();
+        // in a mission marker the host is told (its game starts the mission once the host stands in it too)
+        if (NowMs() - g_atMarkerCheckMs >= 250) {
+            g_atMarkerCheckMs = NowMs();
+            Area at{};
+            CPlayerPed* me = FindPlayerPed(0);
+            bool atMarker = me && flow::InHostWorld() && !HostMissionRecent(0) && !g_hostWaits && !me->InVehicle() &&
+                            MarkerAt(me->GetPosition(), at);
+            if (atMarker != g_atMarkerSent) {
+                g_atMarkerSent = atMarker;
+                LOGI(atMarker ? "At a mission marker (%.1f,%.1f): the host is told" : "Left the mission marker", (at.x1 + at.x2) * 0.5f,
+                     (at.y1 + at.y2) * 0.5f);
+                Writer w(proto::G_MISSION_WAIT);
+                w.U8(atMarker);
+                if (atMarker)
+                    for (float f : {at.x1, at.y1, at.x2, at.y2, at.z}) w.F32(f);
+                Net().Send(proto::CH_RELIABLE, w);
+            }
+        }
         if (g_hostWaits) g_origHighlight(g_waitArea.id, g_waitArea.x1, g_waitArea.y1, g_waitArea.x2, g_waitArea.y2, g_waitArea.z);
         // markers are drawn every frame while the host keeps them (stale after 1 s: host gone/paused)
         if (NowMs() - g_partnerAreasMs < 1000)
@@ -1635,10 +1707,19 @@ bool CutsceneSkipDecline() {
 
 std::string MissionWaitText() {
     if (!Net().Online()) return "";
-    if (Net().IsHost()) return g_waitSent ? TR("Ждём напарника", "Waiting for your partner") : "";
-    return g_hostWaits ? Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"),
-                                Net().PeerName(Net().HostId()).c_str())
-                       : "";
+    if (Net().IsHost()) {
+        if (g_waitSent) return TR("Ждём напарника", "Waiting for your partner");
+        for (auto& [id, w] : g_partnersWaiting)
+            if (Net().Peers().count(id))
+                return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(id).c_str());
+        return "";
+    }
+    if (g_hostWaits)
+        return Format(TR("%s ждёт вас у маркера миссии", "%s is waiting for you at the mission marker"), Net().PeerName(Net().HostId()).c_str());
+    if (g_atMarkerSent)
+        return Format(TR("Миссии начинает хост: %s получил приглашение", "The host starts missions: %s has been invited"),
+                      Net().PeerName(Net().HostId()).c_str());
+    return "";
 }
 
 bool HostReplicating() { return Replicating(); }

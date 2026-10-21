@@ -30,6 +30,11 @@ bool ClientConfig::Load(const std::wstring& coopDirectory) {
             if (_wcsicmp(argv[i], L"-coopcfg") == 0) iniPath = coopDir + argv[i + 1];
         LocalFree(argv);
     }
+    // the usual config keeps its world saves in coop\world\; another one (several game copies on one PC) next to
+    // itself, <name>-world\: the copies wrote one file and failed ("could not write the world save")
+    worldDir = _wcsicmp(iniPath.c_str(), (coopDir + L"coop.ini").c_str()) == 0
+                   ? coopDir + L"world\\"
+                   : iniPath.substr(0, iniPath.size() - 4) + L"-world\\";
     Ini ini;
     if (!ini.Load(iniPath)) return false;
 

@@ -35,6 +35,33 @@ struct Reg {
 } g_reg;
 
 constexpr int kRemoteSlot = 1;  // CWorld::Players index used for the remote player while it is processed
+
+// Every remote player is a CPlayerPed made in that one slot, and a player ped keeps its player data in its slot
+// (CPlayerPed::m_pPlayerData = &CWorld::Players[slot].m_PlayerData): with two or more remote players they all shared
+// one CPlayerPedData. Its chosen weapon (m_nChosenWeapon, the one CPlayerPed::ProcessWeaponSwitch puts in hand every
+// frame) went from one to the other: a remote player given its gun had the other's choice, a weapon it does not have,
+// and showed its fists; its shots were punches. Look pitch, fight moves, wanted and clothes were shared the same way.
+// Each remote player keeps its own copy, with its own wanted and clothes objects; while it is processed (the code
+// that asks CWorld::Players for the player in focus) it is in the slot, and its ped points at the slot, otherwise its
+// ped points at its own copy.
+constexpr size_t kPlayerDataSize = 0xAC;  // sizeof(CPlayerPedData)
+uint8_t* SlotData() { return (uint8_t*)PlayerInfo(kRemoteSlot) + 4; }  // CPlayerInfo::m_PlayerData
+
+void TakeOwnPlayerData(RemotePlayer& rp) {
+    rp.ownData = new uint8_t[kPlayerDataSize];
+    memcpy(rp.ownData, SlotData(), kPlayerDataSize);  // with the wanted and clothes objects CREATE_PLAYER set up
+    Ref<void*>((uintptr_t)SlotData() + 0x00) = nullptr;  // the slot gets objects of its own: the next one made here
+    Ref<void*>((uintptr_t)SlotData() + 0x04) = nullptr;  // must not share these
+    CallMethod<0x571880>(SlotData());                  // CPlayerPedData::AllocateData
+    rp.ped->PlayerData() = rp.ownData;
+}
+
+void FreeOwnPlayerData(RemotePlayer& rp) {
+    if (!rp.ownData) return;
+    CallMethod<0x56F890>(rp.ownData);  // CPlayerPedData::DeAllocateData: its wanted and clothes objects
+    delete[] rp.ownData;
+    rp.ownData = nullptr;
+}
 constexpr int kLastWeapon = 46;  // eWeaponType: the parachute
 constexpr float kTeleportDist = 5.0f;
 
@@ -60,6 +87,7 @@ constexpr uintptr_t kCamShake = addr::TheCamera + 0x12C, kCamShakeStart = addr::
 
 struct LocalContext {
     uint8_t stats[kStatsKeptSize];
+    uint8_t slotData[kPlayerDataSize];  // what the slot held (see TakeOwnPlayerData)
     uint8_t showUpdateStats;
     CPad pads[2];  // whole: buttons, controls, shake
     int8_t focus;
@@ -77,6 +105,7 @@ struct LocalContext {
 
 void SaveLocal(LocalContext& c) {
     memcpy(c.stats, (void*)kStatsBlock, kStatsKeptSize);
+    memcpy(c.slotData, SlotData(), kPlayerDataSize);
     c.showUpdateStats = Ref<uint8_t>(kShowUpdateStats);
     memcpy(c.pads, GetPad(0), sizeof c.pads);
     c.focus = PlayerInFocus();
@@ -103,6 +132,7 @@ void SaveLocal(LocalContext& c) {
 
 void RestoreLocal(const LocalContext& c) {
     memcpy((void*)kStatsBlock, c.stats, kStatsKeptSize);
+    memcpy(SlotData(), c.slotData, kPlayerDataSize);
     Ref<uint8_t>(kShowUpdateStats) = c.showUpdateStats;
     memcpy(GetPad(0), c.pads, sizeof c.pads);
     PlayerInFocus() = c.focus;
@@ -128,6 +158,10 @@ void RestoreLocal(const LocalContext& c) {
 }
 
 void ApplyRemote(RemotePlayer& rp) {
+    if (rp.ownData) {  // its player data goes into the slot while it is processed
+        memcpy(SlotData(), rp.ownData, kPlayerDataSize);
+        rp.ped->PlayerData() = SlotData();
+    }
     if (rp.stats.size() == kStatsBlockSize) memcpy((void*)kStatsBlock, rp.stats.data(), kStatsBlockSize);  // its skills, stamina...
     Ref<uint8_t>(kShowUpdateStats) = 0;
     CPad* p0 = GetPad(0);
@@ -224,6 +258,10 @@ void __fastcall HookPlayerProcessControl(CPlayerPed* self, void* edx) {
     g_origProcessControl(self, edx);
     DriveBy(self);  // still under its pad and camera
     g_inRemoteContext = false;
+    if (rp->ownData) {  // what its processing did to its player data stays its own
+        memcpy(rp->ownData, SlotData(), kPlayerDataSize);
+        self->PlayerData() = rp->ownData;
+    }
     RestoreLocal(saved);
     Field<bool*>(self, 0x500) = nullptr;  // CPed::m_pGogglesState: taking its goggles off must not switch ours off
 }
@@ -662,6 +700,8 @@ void Players::SpawnRemote(RemotePlayer& rp) {
     }
     // registered in CWorld::Players[1] only while processed (see HookPlayerProcessControl)
     slot->ped = nullptr;
+    rp.ped = (CPlayerPed*)ped;
+    TakeOwnPlayerData(rp);
     Cmd(0x00A1).I(handle).F(p.x).F(p.y).F(p.z - 1.0f).Run();  // SET_CHAR_COORDINATES (feet)
     ped->PedType() = PED_TYPE_PLAYER1;  // enemies hostile to the player attack the partner too
     ped->SetProofs(true, true, true, true, true);  // damage is decided by its owner
@@ -695,6 +735,7 @@ void Players::DestroyRemote(RemotePlayer& rp) {
         CallVirtual<0, void>(ped, 1u);  // scalar deleting destructor (returns the slot to the ped pool)
         LOGI("Remote player %d removed", rp.id);
     }
+    FreeOwnPlayerData(rp);  // after its ped: the destructor may still look at it
     rp.ped = nullptr;
     rp.pedHandle = -1;
 }
@@ -917,10 +958,13 @@ void Players::ApplyState(RemotePlayer& rp) {
         SetEntityPosition(ped, cur + corr);
         if (err.z > 1.0f && ped->MoveSpeed().z < 0.0f) ped->MoveSpeed().z = 0.0f;  // below its place: no falling on
     }
-    // standing still: keep the facing in sync (movement/aim set it while active)
+    // standing still: keep the facing in sync (movement sets it while active). Aiming, its own game turns its player
+    // with its camera (the camera code sets the aiming heading), and that camera runs only there: here it kept facing
+    // where it started to aim, up and down only (the look pitch comes with its state). It faces as its owner, quickly.
     bool moving = std::abs(st.pad.lx) > 10 || std::abs(st.pad.ly) > 10;
-    if (!moving && !(st.pad.buttons & PadState::B_RS1)) {
-        float r = LerpAngle(ped->CurrentRotation(), st.rotation, 0.2f);
+    bool aiming = (st.pad.buttons & PadState::B_RS1) != 0;
+    if (aiming || !moving) {
+        float r = LerpAngle(ped->CurrentRotation(), st.rotation, aiming ? 0.6f : 0.2f);
         ped->CurrentRotation() = ped->AimingRotation() = r;
     }
 }
@@ -1079,6 +1123,7 @@ void Players::OnPreProcess() {
     for (auto& [id, rp] : m_remote) {
         if (rp.ped && !IsPedValid(rp.ped)) {
             LOGW("Remote player %d ped vanished, respawning", id);
+            FreeOwnPlayerData(rp);
             rp.ped = nullptr;
             rp.blip = 0;
         }
@@ -1278,9 +1323,45 @@ void Players::OnRender() {
 bool Players::OnCommand(const std::string& cmd, const std::vector<std::string>& args) {
     if (cmd != "tp" && cmd != "tphere") return false;
     if (!core::IsPlayerReady()) return true;
+    // whom: /tp <nickname or number>; without one the host (for a partner) or the only other player. It used to take
+    // the last player of the list whatever was typed.
     RemotePlayer* target = nullptr;
+    int inGame = 0;
     for (auto& [id, rp] : m_remote)
-        if (rp.hasState) target = &rp;
+        if (rp.hasState) ++inGame, target = &rp;
+    if (!args.empty()) {
+        target = nullptr;
+        std::string want = ToLower(args[0]);
+        bool number = !want.empty() && want.size() <= 3 && std::all_of(want.begin(), want.end(), ::isdigit);
+        RemotePlayer* prefix = nullptr;
+        int prefixes = 0;
+        for (auto& [id, rp] : m_remote) {
+            std::string name = ToLower(Net().PeerName(id));
+            if ((number && id == std::stoi(want)) || name == want) {
+                target = &rp;
+                break;
+            }
+            if (name.rfind(want, 0) == 0) ++prefixes, prefix = &rp;
+        }
+        if (!target && prefixes == 1) target = prefix;
+        if (!target) {
+            ui::TheChat().AddError(Format(TR("Нет игрока «%s». Список игроков: /players.", "No player \"%s\". The player list: /players."),
+                                          args[0].c_str()));
+            return true;
+        }
+        if (!target->hasState) {
+            ui::TheChat().AddError(Format(TR("%s ещё не в игре.", "%s is not in the game yet."), Net().PeerName(target->id).c_str()));
+            return true;
+        }
+    } else if (inGame > 1) {
+        RemotePlayer* host = Get(Net().HostId());
+        if (Net().IsHost() || !host || !host->hasState) {
+            ui::TheChat().AddError(TR("Укажите игрока: /tp <ник или номер> (список: /players).",
+                                      "Name the player: /tp <nickname or number> (the list: /players)."));
+            return true;
+        }
+        target = host;
+    }
     if (!target) {
         ui::TheChat().AddError(TR("Напарник ещё не в игре.", "Your partner is not in the game yet."));
         return true;

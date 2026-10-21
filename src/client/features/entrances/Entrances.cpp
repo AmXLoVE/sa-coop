@@ -6,11 +6,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <vector>
 
 #include "common/api/protocol/Protocol.h"
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/player/Players.h"
 #include "shared/api/net-session/Session.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
@@ -35,6 +37,46 @@ void Center(uintptr_t e, float& x, float& y) {  // of CEntryExit::m_recEntrance
 std::vector<int32_t> g_sent;  // host: what the partner has, -1 for a free slot
 uint64_t g_scanMs = 0;
 
+// partner: the flags the host sent, and the doors kept open here (see KeepWayOut)
+constexpr uint16_t kEnableAccess = 0x4000, kDisableExit = 0x800;
+std::map<int, uint16_t> g_hostFlags;
+std::map<int, bool> g_keptOpen;
+uint64_t g_wayOutMs = 0;
+
+// The host's mission may shut the doors of an interior for its scene and take its player out by script ("Ryder":
+// the pizzeria during the robbery). The host's flags came here, but nothing took the partners out: they stayed shut in.
+// A partner in an interior the host is not in can always go out through its doors; once it is out (or the host is
+// in there with it) those doors are as the host has them again.
+void KeepWayOut() {
+    CPoolHeader* pool = Pool();
+    if (!pool || NowMs() - g_wayOutMs < 500) return;
+    g_wayOutMs = NowMs();
+    CPlayerPed* me = FindPlayerPed(0);
+    int8_t here = me ? me->AreaCode() : 0;
+    const RemotePlayer* host = Players::Instance().Get(Net().HostId());
+    bool alone = here != 0 && host && host->hasState && host->state.area != here;
+    for (int i = 0; i < pool->size; ++i) {
+        if (pool->byteMap[i] < 0) continue;
+        uint16_t* f = Flags(pool, i);
+        // CEntryExit::m_nArea: the door is in an interior of this number. Many interiors share a number (they sit apart
+        // on the map): only the doors around the player are this one's
+        float ex, ey;
+        Center(Entry(pool, i), ex, ey);
+        bool inside = Ref<int8_t>(Entry(pool, i) + 0x32) == here && me &&
+                      (CVector{ex, ey, 0} - CVector{me->GetPosition().x, me->GetPosition().y, 0}).Length() < 60.0f;
+        if (alone && inside) {
+            uint16_t open = (uint16_t)((*f | kEnableAccess) & ~kDisableExit);
+            if (open != *f) {
+                if (!g_keptOpen.count(i)) LOGI("Entrance %d (%.8s) shut by the host's game: kept open, the host is not in here", i, (const char*)Entry(pool, i));
+                g_keptOpen[i] = true;
+                *f = open;
+            }
+        } else if (g_keptOpen.erase(i)) {
+            if (auto it = g_hostFlags.find(i); it != g_hostFlags.end()) *f = (uint16_t)((*f & kOwnBits) | (it->second & ~kOwnBits));
+        }
+    }
+}
+
 class Entrances : public Module {
 public:
     const char* Name() const override { return "Entrances"; }
@@ -58,18 +100,21 @@ public:
                     uint16_t* f = Flags(pool, i);
                     if (n < 10) LOGD("Entrance %d (%.8s): flags %04X -> %04X", i, name, *f, flags);
                     *f = (uint16_t)((*f & kOwnBits) | (flags & ~kOwnBits));
+                    g_hostFlags[i] = flags;
+                    g_keptOpen.erase(i);  // the next check opens it again if it still has to be
                     break;
                 }
             }
             LOGD("Entrances: %d from the host", n);
         });
     }
-    void OnSessionEnd() override { g_sent.clear(); }
-    void OnGameStarted() override { g_sent.clear(); }
+    void OnSessionEnd() override { g_sent.clear(), g_hostFlags.clear(), g_keptOpen.clear(); }
+    void OnGameStarted() override { g_sent.clear(), g_hostFlags.clear(), g_keptOpen.clear(); }
     void OnPeerResync(uint8_t) override { g_sent.clear(); }  // the next scan sends them all
 
     void OnPostProcess() override {
         CPoolHeader* pool = Pool();
+        if (Net().Online() && !Net().IsHost() && core::IsPlayerReady()) KeepWayOut();
         if (!Net().Online() || !Net().IsHost() || !core::IsPlayerReady() || !pool || NowMs() - g_scanMs < 500) return;
         g_scanMs = NowMs();
         bool all = g_sent.size() != (size_t)pool->size;

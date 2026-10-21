@@ -110,6 +110,7 @@ private:
     void ApplyMirror(NetPed& np);
     game::CPed* SpawnMirror(NetPed& np);
     void Forget(uint16_t netId, bool deletePed);
+    void KeepBaseAnim(NetPed& np);  // a mirror always keeps one lasting full-body animation (see Peds.cpp)
     PedSyncState Capture(NetPed& np);
 
     std::map<uint16_t, NetPed> m_byId;
