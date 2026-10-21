@@ -634,6 +634,10 @@ void HandleMarkers(uint8_t from, Reader& r) {
         areas.push_back(a);
     }
     if (!r.Ok() || from != Net().HostId() || Net().IsHost()) return;
+    if (areas.size() != g_partnerAreas.size() || (!areas.empty() && areas[0].id != g_partnerAreas[0].id))
+        LOGD("Destination markers from the host: %zu%s", areas.size(),
+             areas.empty() ? "" : Format(" (first at %.1f,%.1f,%.1f)", (areas[0].x1 + areas[0].x2) * 0.5f, (areas[0].y1 + areas[0].y2) * 0.5f,
+                                         areas[0].z).c_str());
     g_partnerAreas = std::move(areas);
     g_partnerAreasMs = NowMs();
 }

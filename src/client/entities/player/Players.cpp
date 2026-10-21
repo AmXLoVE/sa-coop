@@ -235,7 +235,15 @@ using GangDriveByFn = bool(__fastcall*)(void*, void*, CPed*);
 GangDriveByFn g_origGangDriveBy = nullptr;
 bool __fastcall HookGangDriveByProcess(void* task, void* edx, CPed* ped) {
     auto ours = g_ourDriveBy.find(ped);
-    if (ours != g_ourDriveBy.end() && !AimFromSeat(GetPad(0))) Field<uint8_t>(task, 8) = 1;  // m_bIsFinished: let go
+    if (ours != g_ourDriveBy.end() && !AimFromSeat(GetPad(0))) {
+        // a remote player's copy: the finished flag alone ended the task but left its lean-out pose on the last frame
+        // (the other players saw it frozen out of the window until it leaned out again); the task's own abort fades it
+        if (RemotePlayer* rp = Players::Instance().FindByPed(ped)) {
+            CallMethod<0x62D290, bool>(task, ped, 1 /* ABORT_PRIORITY_URGENT */, (void*)nullptr);  // CTaskSimpleGangDriveBy::MakeAbortable
+            LOGD("Remote player %d: drive-by let go", rp->id);
+        }
+        Field<uint8_t>(task, 8) = 1;  // m_bIsFinished: let go
+    }
     bool done = g_origGangDriveBy(task, edx, ped);
     if (done && ours != g_ourDriveBy.end()) g_ourDriveBy.erase(ours);
     return done;
