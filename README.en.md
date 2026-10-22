@@ -171,6 +171,8 @@ The chat supports the `/help`, `/players` and `/tp` (go to your partner) command
 - You see the other player's train but cannot get into it: it is driven by the player whose game made it.
 - The other player's parachute canopy is not shown, only their animations. Each player hears their own
   pedestrians' chatter outside missions.
+- If the driver listens to their own MP3s (User Track Player), the passenger hears their own User Track Player, not
+  the driver's music.
 - The partner gets story progress (new areas, gyms, mission markers) by loading the host's world after every
   mission the host passes. Loading takes a few seconds, and the partner keeps their position, weapons and
   progress.
