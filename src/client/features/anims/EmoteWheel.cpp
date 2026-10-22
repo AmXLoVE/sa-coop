@@ -1,6 +1,7 @@
 // The emote wheel: while its key is held ([keys] emote_wheel, J), the emotes stand in a ring around the middle of the
 // screen and the mouse picks one by its direction, as the weapon wheel of the later games; letting the key go plays it.
-// The mouse is ours meanwhile (no camera turn, no shots), the keyboard stays the game's: the player can walk on.
+// The mouse is ours meanwhile (no camera turn, no shots, the F9 window's cursor), the keyboard stays the game's: the
+// player can walk on.
 #include <windows.h>
 
 #include <algorithm>
@@ -54,10 +55,14 @@ public:
     void OnRender() override {
         if (!m_open) return;
         auto& g = ui::Gfx();
-        float s = g.Scale(), cx = g.Width() * 0.5f, cy = g.Height() * 0.5f, r = 300 * s;
-        float bw = 230 * s, bh = 46 * s;
-        g.Rect(0, 0, g.Width(), g.Height(), 0x50000000);
+        float s = g.Scale(), cx = g.Width() * 0.5f, cy = g.Height() * 0.5f;
+        float lhName = g.LineHeight(ui::FONT_NORMAL), lhCmd = g.LineHeight(ui::FONT_SMALL);
+        float bw = 240 * s, bh = lhName + lhCmd + 10 * s;
         int n = (int)m_items.size();
+        // the tiles at the top and the bottom stand closest: far enough for them not to touch, inside the screen
+        float r = std::max(330 * s, bh / (1.0f - std::cos(2 * kPi / n)) + 4 * s);
+        r = std::min({r, cy - bh / 2 - 8 * s, cx - bw / 2 - 8 * s});
+        g.Rect(0, 0, g.Width(), g.Height(), 0x50000000);
         for (int k = 0; k < n; ++k) {
             float a = 2 * kPi * k / n, x = cx + r * std::sin(a), y = cy - r * std::cos(a);
             bool lit = k == m_pick;
@@ -66,8 +71,12 @@ public:
             const emotes::Emote& e = emotes::Get(m_items[k]);
             std::string label = emotes::Name(m_items[k]) + (e.looped ? " ∞" : "");
             if (m_items[k] == emotes::Current()) label = "{5FA04E}" + label;
-            g.Text(ui::FONT_NORMAL, x, y - g.LineHeight(ui::FONT_NORMAL) * 0.5f, label, lit ? ui::w::kSaBlue : 0xFFE0E0E0,
-                   ui::TEXT_CENTER | ui::TEXT_SHADOW);
+            float top = y - bh / 2 + 4 * s;
+            g.Text(ui::FONT_NORMAL, x, top, label, lit ? ui::w::kSaBlue : 0xFFE0E0E0, ui::TEXT_CENTER | ui::TEXT_SHADOW);
+            // its chat commands, both when they fit
+            std::string cmd = emotes::Commands(m_items[k]);
+            if (g.TextWidth(ui::FONT_SMALL, cmd) > bw - 8 * s) cmd = emotes::Commands(m_items[k], true);
+            g.Text(ui::FONT_SMALL, x, top + lhName, cmd, ui::w::kSaMuted, ui::TEXT_CENTER | ui::TEXT_SHADOW);
         }
         // the middle: what the mouse points at and a dot on the way to it
         float lh = g.LineHeight(ui::FONT_MENU_SMALL);
@@ -84,6 +93,7 @@ public:
             float a = 2 * kPi * m_pick / n, d = r * 0.62f, dot = 10 * s;
             g.Rect(cx + d * std::sin(a) - dot / 2, cy - d * std::cos(a) - dot / 2, dot, dot, ui::w::kSaBlue);
         }
+        ui::w::DrawCursor();  // the F9 window's
     }
 
     void OnGameShutdown() override { Close(false); }

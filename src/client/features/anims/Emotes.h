@@ -18,6 +18,8 @@ int Count();
 const Emote& Get(int i);
 std::string Name(int i);              // the first name in the interface language
 int Find(const std::string& utf8);    // by any name of either language, -1 when none
+// its chat commands (its one-word names): "/dance, /танец", or only the one of the interface language
+std::string Commands(int i, bool first = false);
 const char* Blocked();                // why no emote can start now (nullptr: it can)
 void Play(int i);                     // a looped one that plays now stops instead
 void Stop();
