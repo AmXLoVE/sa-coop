@@ -71,8 +71,7 @@ public:
             bool lit = k == m_pick;
             g.Rect(x - bw / 2, y - bh / 2, bw, bh, lit ? 0xE8000000 : 0xC0000000);
             g.RectOutline(x - bw / 2, y - bh / 2, bw, bh, lit ? ui::w::kSaBlue : ui::w::kSaLine, std::max(1.0f, (lit ? 3 : 1) * s));
-            const emotes::Emote& e = emotes::Get(m_items[k]);
-            std::string label = emotes::Name(m_items[k]) + (e.looped ? " ∞" : "");
+            std::string label = emotes::Name(m_items[k]);
             if (m_items[k] == emotes::Current()) label = "{5FA04E}" + label;
             float top = y - bh / 2 + 4 * s;
             g.Text(ui::FONT_NORMAL, x, top, label, lit ? ui::w::kSaBlue : 0xFFE0E0E0, ui::TEXT_CENTER | ui::TEXT_SHADOW);
@@ -87,12 +86,10 @@ public:
         std::string what = m_pick >= 0 ? emotes::Name(m_items[m_pick]) : TR("Наведите мышь", "Point the mouse");
         g.Text(ui::FONT_NORMAL, cx, cy - g.LineHeight(ui::FONT_NORMAL) * 0.5f, what, m_pick >= 0 ? ui::w::kSaBlue : 0xFFE0E0E0,
                ui::TEXT_CENTER | ui::TEXT_SHADOW);
-        std::string key = emotes::KeyName(Cfg().emoteKey);
-        g.Text(ui::FONT_SMALL, cx, cy + lh * 0.9f,
-               m_pick >= 0 ? Format(TR("Отпустите %s, чтобы начать", "Release %s to play"), key.c_str())
-                           : TR("В середине отмена", "The middle cancels"),
-               ui::w::kSaMuted, ui::TEXT_CENTER | ui::TEXT_SHADOW);
         if (m_pick >= 0) {
+            std::string key = emotes::KeyName(Cfg().emoteKey);
+            g.Text(ui::FONT_SMALL, cx, cy + lh * 0.9f, Format(TR("Отпустите %s, чтобы начать", "Release %s to play"), key.c_str()),
+                   ui::w::kSaMuted, ui::TEXT_CENTER | ui::TEXT_SHADOW);
             float a = 2 * kPi * m_pick / n, d = r * 0.62f, dot = 10 * s;
             g.Rect(cx + d * std::sin(a) - dot / 2, cy - d * std::cos(a) - dot / 2, dot, dot, ui::w::kSaBlue);
         }
