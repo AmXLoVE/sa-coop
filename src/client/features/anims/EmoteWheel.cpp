@@ -1,7 +1,8 @@
 // The emote wheel: while its key is held ([keys] emote_wheel, J), the emotes stand in a ring around the middle of the
 // screen and the mouse picks one by its direction, as the weapon wheel of the later games; letting the key go plays it.
-// The mouse is ours meanwhile (no camera turn, no shots, the F9 window's cursor), the keyboard stays the game's: the
-// player can walk on.
+// The keyboard stays the game's (the player can walk on). The mouse does not: the game's own reading of it goes on (an
+// OS cursor does not move in the game, DirectInput owns the mouse there), and its motion moves a cursor of the wheel,
+// held inside the ring, instead of the camera (Input::SetMouseRelative). Its direction from the middle picks.
 #include <windows.h>
 
 #include <algorithm>
@@ -44,10 +45,12 @@ public:
             if (m_items.empty()) return;
             m_open = true;
             m_pick = -1;
-            ui::In().SetMouseCapture(true);  // the cursor goes to the middle
+            m_curX = m_curY = 0;
+            ui::In().SetMouseRelative(true);
             return;
         }
         if (!usable) return Close(false);
+        MoveCursor();
         m_pick = Hovered();
         if (!held) Close(true);
     }
@@ -93,17 +96,33 @@ public:
             float a = 2 * kPi * m_pick / n, d = r * 0.62f, dot = 10 * s;
             g.Rect(cx + d * std::sin(a) - dot / 2, cy - d * std::cos(a) - dot / 2, dot, dot, ui::w::kSaBlue);
         }
-        ui::w::DrawCursor();  // the F9 window's
+        m_radius = r;
+        ui::w::DrawCursorAt(cx + m_curX, cy + m_curY);  // the F9 window's
     }
 
     void OnGameShutdown() override { Close(false); }
 
 private:
-    // the item the mouse points at from the middle of the screen, -1 near the middle
+    // the mouse's motion since the last frame, as the camera's sensitivity of the game's settings would turn it
+    void MoveCursor() {
+        float dx, dy;
+        ui::In().TakeMouseMotion(dx, dy);
+        float accel = game::Ref<float>(0xB6EC1C);  // CCamera::m_fMouseAccelHorzntl, 0.0025 by default
+        float k = std::isfinite(accel) && accel > 0 ? std::clamp(accel / 0.0025f, 0.4f, 3.0f) : 1.0f;
+        k *= std::max(0.5f, ui::Gfx().Scale());
+        m_curX += dx * k;
+        m_curY += dy * k;
+        float len = std::sqrt(m_curX * m_curX + m_curY * m_curY), lim = m_radius > 0 ? m_radius : 200 * ui::Gfx().Scale();
+        if (len > lim) {  // held inside the ring, as the weapon wheel of the later games
+            m_curX *= lim / len;
+            m_curY *= lim / len;
+        }
+    }
+
+    // the item the wheel's cursor points at from the middle of the screen, -1 near the middle
     int Hovered() const {
         auto& g = ui::Gfx();
-        auto& in = ui::In().State();
-        float dx = in.mouseX - g.Width() * 0.5f, dy = in.mouseY - g.Height() * 0.5f;
+        float dx = m_curX, dy = m_curY;
         if (dx * dx + dy * dy < (60 * g.Scale()) * (60 * g.Scale())) return -1;
         int n = (int)m_items.size();
         float a = std::atan2(dx, -dy);  // 0 at the top, clockwise
@@ -114,13 +133,15 @@ private:
     void Close(bool play) {
         if (!m_open) return;
         m_open = false;
-        if (!core::ConnectMenuVisible()) ui::In().SetMouseCapture(false);
+        ui::In().SetMouseRelative(false);
         if (play && m_pick >= 0) emotes::Play(m_items[m_pick]);
         m_pick = -1;
     }
 
     bool m_held = false, m_open = false;
     int m_pick = -1;
+    float m_curX = 0, m_curY = 0;  // the wheel's cursor from the middle of the screen, in screen pixels
+    float m_radius = 0;            // of the ring as last drawn
     std::vector<int> m_items;  // emote indexes, clockwise from the top
 };
 
