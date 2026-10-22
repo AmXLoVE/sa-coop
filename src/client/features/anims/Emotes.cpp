@@ -1,18 +1,22 @@
 // Emotes and gestures (see Emotes.h).
 //
 // An emote is TASK_PLAY_ANIM on the local player: the task keeps the pad's walk away while it runs, and an emote
-// stops (CLEAR_CHAR_TASKS) when the player moves, jumps, aims, fires or gets into a car. Its IFP block is streamed in
+// stops (CLEAR_CHAR_TASKS) when the player moves, jumps, aims, fires or gets into a car. Only a press made after the
+// emote began counts: a key still held from picking it, or a pad field the game keeps up all along (the first version
+// took every emote away a frame after a 250 ms grace), stops nothing. Its IFP block is streamed in
 // first (the task needs the animation in memory) and let go once the emote is over, unless it was in memory before.
 // The other games see it through Anims.cpp: the animation of the emote's block counts as an activity there.
 #include "features/anims/Emotes.h"
 
 #include <windows.h>
 
+#include <cstdlib>
 #include <set>
 #include <vector>
 
 #include "common/lib/log/Log.h"
 #include "common/lib/util/Util.h"
+#include "entities/player/Players.h"
 #include "shared/config/Config.h"
 #include "shared/game/Anim.h"
 #include "shared/game/Game.h"
@@ -47,7 +51,6 @@ constexpr int kCount = (int)(sizeof(kEmotes) / sizeof(kEmotes[0]));
 
 constexpr uint64_t kLoadTimeoutMs = 5000;
 constexpr uint64_t kStartTimeoutMs = 1000;  // the task's animation shows up on the clump within it
-constexpr uint64_t kInputGraceMs = 250;     // a key still held from picking it does not stop it at once
 
 std::wstring Lower(const std::string& utf8) {
     std::wstring w = Utf8ToWide(Trim(utf8));
@@ -76,11 +79,21 @@ void* BlockAssociation(void* clump, int block) {
     return best;
 }
 
-bool StopInput() {
-    const CControllerState& p = GetPad(0)->NewState;
-    return p.LeftStickX || p.LeftStickY || p.ButtonSquare || p.ButtonCross || p.RightShoulder1 || p.ButtonCircle ||
-           p.ButtonTriangle;
-}
+// the pad inputs that stop an emote
+struct StopKey {
+    const char* name;
+    int16_t CControllerState::*field;
+    int threshold;  // the sticks: a pad's drift is no walk
+};
+constexpr StopKey kStopKeys[] = {
+    {"walk left/right", &CControllerState::LeftStickX, 64},
+    {"walk forward/back", &CControllerState::LeftStickY, 64},
+    {"jump", &CControllerState::ButtonSquare, 1},
+    {"sprint", &CControllerState::ButtonCross, 1},
+    {"aim", &CControllerState::RightShoulder1, 1},
+    {"fire", &CControllerState::ButtonCircle, 1},
+    {"enter a car", &CControllerState::ButtonTriangle, 1},
+};
 
 bool InScene() {
     return Ref<uint8_t>(0xB5F851) || cam::WideScreenOn() || GetPad(0)->DisablePlayerControls;  // CCutsceneMgr::ms_running
@@ -92,12 +105,12 @@ public:
 
     void PlayEmote(int i) {
         if (i < 0 || i >= kCount) return;
-        if (i == m_current && kEmotes[i].looped) return StopEmote();
+        if (i == m_current && kEmotes[i].looped) return StopEmote("by picking it again");
         if (const char* why = Blocked()) {
             if (*why) ui::TheChat().AddError(why);
             return;
         }
-        StopEmote();  // another one goes on from its stance
+        StopEmote("for another one");  // which goes on from its stance
         m_current = i;
         m_block = BlockIndex(kEmotes[i].block);
         m_since = NowMs();
@@ -107,9 +120,12 @@ public:
         }
     }
 
-    void StopEmote() {
+    void StopEmote(const char* why = "by the player") {
         if (m_current < 0) return;
-        if (m_started) ClearTask();
+        if (m_started) {
+            ClearTask();
+            LOGI("Emote %s stopped %s", kEmotes[m_current].en, why);
+        }
         Finish();
     }
 
@@ -133,16 +149,30 @@ public:
             Cmd(0x0605).I(GetPedRef(me)).S(e.anim).S(e.block).F(4.0f).I(e.looped ? 1 : 0).I(0).I(0).I(0).I(-1).Run();
             m_started = true;
             m_since = now;
+            m_released = 0;
             LOGI("Emote %s (%s/%s)", e.en, e.block, e.anim);
             return;
         }
         void* a = BlockAssociation(me->RwObject(), m_block);
         if (a) m_seen = true;
         if (!a && (m_seen || now - m_since > kStartTimeoutMs)) {
-            if (!m_seen) LOGW("Emote %s: its animation never showed up", e.en);
+            if (!m_seen) LOGW("Emote %s: its animation never showed up (primary task %d)", e.en, ActivePrimaryTaskType(me));
+            else if (e.looped) LOGW("Emote %s: its animation was taken away (primary task %d)", e.en, ActivePrimaryTaskType(me));
+            else LOGI("Emote %s played to its end", e.en);
             return Finish();
         }
-        if (me->InVehicle() || InScene() || (now - m_since > kInputGraceMs && StopInput())) StopEmote();
+        if (me->InVehicle()) return StopEmote("in a car");
+        if (InScene()) return StopEmote("by a scene");
+        const CControllerState& pad = GetPad(0)->NewState;
+        for (int k = 0; k < (int)(sizeof(kStopKeys) / sizeof(kStopKeys[0])); ++k) {
+            int v = pad.*kStopKeys[k].field;
+            if (std::abs(v) < kStopKeys[k].threshold) {
+                m_released |= 1u << k;
+            } else if (m_released & (1u << k)) {
+                LOGI("Emote %s: %s pressed (%d)", e.en, kStopKeys[k].name, v);
+                return StopEmote("by the pad");
+            }
+        }
     }
 
     void OnGameStarted() override { Reset(); }
@@ -177,13 +207,19 @@ public:
     }
 
 private:
+    // each emote with its commands, a few to a line
     void List() {
-        std::string line;
-        for (int i = 0; i < kCount; ++i) line += (i ? ", " : "") + emotes::Name(i);
-        ui::TheChat().AddSystem(TR("Эмоции: ", "Emotes: ") + line);
-        ui::TheChat().AddSystem(Format(TR("/e <название> или /<название>, /e стоп. Колесо: зажмите %s и выберите мышью.",
-                                          "/e <name> or /<name>, /e stop. The wheel: hold %s and pick with the mouse."),
+        ui::TheChat().AddSystem(Format(TR("Эмоции: напишите команду или /e <название>, /e стоп останавливает. Колесо: зажмите %s.",
+                                          "Emotes: type the command or /e <name>, /e stop stops. The wheel: hold %s."),
                                        KeyName(Cfg().emoteKey).c_str()));
+        std::string line;
+        for (int i = 0; i < kCount; ++i) {
+            line += (line.empty() ? "" : "; ") + emotes::Name(i) + " — " + Commands(i);
+            if (i % 4 == 3 || i == kCount - 1) {
+                ui::TheChat().AddSystem(line);
+                line.clear();
+            }
+        }
     }
 
     static void ClearTask() {
@@ -209,6 +245,7 @@ private:
     int m_current = -1, m_block = -1;
     bool m_started = false, m_seen = false;
     uint64_t m_since = 0;
+    uint32_t m_released = 0;  // the stop inputs let go since the emote began: pressing one again stops it
     std::set<int> m_ours;  // blocks we requested that the game did not have in memory
 };
 
@@ -230,6 +267,23 @@ int Count() { return kCount; }
 const Emote& Get(int i) { return kEmotes[i]; }
 
 std::string Name(int i) { return Names(Cfg().english ? kEmotes[i].en : kEmotes[i].ru)[0]; }
+
+std::string Commands(int i, bool first) {
+    std::string out;
+    const char* ru = kEmotes[i].ru;
+    const char* en = kEmotes[i].en;
+    // both with the Latin one first, or only the interface language's
+    const char* order[] = {first && !Cfg().english ? ru : en, first && !Cfg().english ? en : ru};
+    for (const char* list : order) {
+        for (auto& n : Names(list))
+            if (n.find(' ') == std::string::npos) {
+                out += (out.empty() ? "/" : ", /") + n;
+                break;
+            }
+        if (first && !out.empty()) break;
+    }
+    return out;
+}
 
 int Find(const std::string& utf8) {
     std::wstring want = Lower(utf8);
