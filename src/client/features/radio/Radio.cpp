@@ -4,7 +4,8 @@
 // retune it. The driver's game sends its radio while players ride with it: the station, the tracks queued on it and
 // where the playing one is. The passenger's game tunes in to the same station, puts the same tracks in the queue and
 // starts the playing one at the driver's point; its own retune buttons are dead while the driver is a remote player.
-// The User Track Player plays files of the player's own computer: a passenger's plays its own tracks.
+// The User Track Player plays files of the player's own computer: a passenger's plays its own tracks (the files are not
+// sent over the network), and the chat says so.
 #include <algorithm>
 #include <cstdlib>
 #include <map>
@@ -16,9 +17,11 @@
 #include "entities/player/Players.h"
 #include "entities/vehicle/Vehicles.h"
 #include "shared/api/net-session/Session.h"
+#include "shared/config/Config.h"
 #include "shared/game/Game.h"
 #include "shared/lib/core/Core.h"
 #include "shared/lib/memory/Memory.h"
+#include "shared/ui/chat/Chat.h"
 
 namespace coop {
 
@@ -219,6 +222,8 @@ void Tune(int8_t station, const RadioState* s) {
     g_pendingTrack = s->tracks[first];
 }
 
+bool g_toldUserTracks = false;  // the chat said the driver's User Track Player is not heard here
+
 void PassengerUpdate() {
     if (g_pending && (Field<int32_t>(Radio(), kMode) == MODE_PLAYING || NowMs() - g_pendingMs > kSettleMs)) {
         if (g_playTrackMs && Field<int32_t>(Radio(), kMode) == MODE_PLAYING)
@@ -227,11 +232,23 @@ void PassengerUpdate() {
         g_playTrackMs = 0;
     }
     RemotePlayer* rp = RemoteDriver();
-    if (!rp || !CarRadio()) return;
-    auto it = g_drivers.find(rp->id);
-    NetVehicle* nv = Vehicles::Instance().Find(rp->ped->VehicleIfIn());
-    if (it == g_drivers.end() || !nv || it->second.veh != nv->netId || NowMs() - it->second.recvMs > kStaleMs) return;
+    auto it = rp && CarRadio() ? g_drivers.find(rp->id) : g_drivers.end();
+    NetVehicle* nv = rp ? Vehicles::Instance().Find(rp->ped->VehicleIfIn()) : nullptr;
+    if (it == g_drivers.end() || !nv || it->second.veh != nv->netId || NowMs() - it->second.recvMs > kStaleMs) {
+        g_toldUserTracks = false;
+        return;
+    }
     RadioState& s = it->second;
+    if (s.station != RADIO_USER_TRACKS) {
+        g_toldUserTracks = false;
+    } else if (!g_toldUserTracks) {
+        g_toldUserTracks = true;
+        ui::TheChat().AddSystem(Ref<uint16_t>(kUserTracksCount)
+                                    ? TR("Водитель слушает свою музыку, а у вас играет ваш User Track Player.",
+                                         "The driver listens to their own music; your User Track Player plays for you.")
+                                    : TR("Водитель слушает свою музыку. У вас своих треков нет, поэтому радио выключено.",
+                                         "The driver listens to their own music. You have no tracks of your own, so the radio is off."));
+    }
     int8_t want = s.station;
     if (want == RADIO_USER_TRACKS && !Ref<uint16_t>(kUserTracksCount)) want = RADIO_OFF;  // no tracks of our own
     int8_t mine = Requested<int8_t>(kStation);
@@ -350,6 +367,7 @@ private:
         g_sent = {};
         g_pending = g_pendingSync = false;
         g_playTrackMs = 0;
+        g_toldUserTracks = false;
     }
 };
 
