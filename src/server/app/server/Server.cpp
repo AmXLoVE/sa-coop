@@ -392,8 +392,10 @@ void Server::HandleCommand(Player* p, const std::string& text) {
                   "For the host: /kick <nickname or number> [reason], /say <text>");
         reply(kColorServer, "В игре: /tp (переместиться к напарнику), /tphere (позвать напарника к себе)",
               "In the game: /tp (go to your partner), /tphere (bring your partner to you)");
-        reply(kColorServer, "Эмоции: /e <название>, /e (список), /dance, /wave и другие. Колесо эмоций: зажмите J",
-              "Emotes: /e <name>, /e (the list), /dance, /wave and more. The emote wheel: hold J");
+        reply(kColorServer, "Эмоции: /e — список всех, /dance — танцевать, /wave — помахать, /sit — сесть, /e стоп — "
+                            "остановить. Колесо эмоций: зажмите J и выберите мышью",
+              "Emotes: /e lists them all, /dance to dance, /wave to wave, /sit to sit, /e stop to stop. The emote wheel: "
+              "hold J and pick with the mouse");
     } else if (cmd == "players" || cmd == "status") {
         for (auto& o : m_players) {
             if (!o.joined) continue;
